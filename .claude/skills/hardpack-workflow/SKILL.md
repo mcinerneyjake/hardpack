@@ -666,8 +666,21 @@ Stop, report, and wait on any of:
 - A quality-gate failure not fixed in one pass.
 - **A check the target repo defines that you could not run** (§9). Name it. Not-run is never reported
   as passed, and under `--continuous` this ends the loop like any other hard stop.
-- **In `auto-pr`: a repo with no enabled required checks.** Verify with `gh workflow list --all`.
-  Absence of failing checks is not green — it means nothing ran. Never read it as a pass.
+- **In `auto-pr`: a repo where no enabled workflow runs on a pull request.** `gh workflow list --all`
+  names which are enabled — but enabled is not the same as *contributing a check*, so read each
+  candidate's `on:` block too. A workflow triggered only `on: push` (a deploy job), one that is
+  `paths:`-filtered away from this diff, or a GitHub-managed entry like `Dependabot Updates` all list
+  as `active` and still leave `gh pr checks` empty. Absence of failing checks is not green — where
+  nothing runs, empty reads identically to clean. Never read it as a pass.
+  **Required-ness is deliberately not the condition.** `gh api repos/{owner}/{repo}/rulesets` answers
+  403 on this account's **private** repos, which have no GitHub Pro (*"Upgrade to GitHub Pro or make
+  this repository public"*); public `mcinerneyjake/kanban` does answer, which is why `CLAUDE.md` can
+  use that endpoint for *this* repo and this rule cannot use it generally. A stop conditioned on
+  required-ness therefore cannot be verified in most repos `auto-pr` actually runs in: it either denies
+  service permanently there or gets guessed at. Both readings of the older wording were defensible,
+  which is why three night runs on the same two repos split — one opened PRs, two stranded committed,
+  gated, reviewed work unpushed (`tkt-c60f592675cf`). Required-ness is in any case a **merge** concern,
+  and merge is human at every level (§11–13); PR-open is not the merge.
 - A red check, or a `/code-review` finding you rate significant.
 - **A review whose scope you could not confirm** (§10) — an empty finding list from a review
   that never saw your diff reads exactly like a clean one.
