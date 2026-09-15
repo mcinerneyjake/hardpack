@@ -97,6 +97,27 @@ describe('pinned ticket-workflow build: id confinement', () => {
   });
 });
 
+// Error-message redaction (package v0.25.0, upstream #86; tkt-9782083b72c2). server/middleware/
+// asyncWrap.ts returns an HttpError's message VERBATIM to HTTP clients, on the stated grounds that
+// "HttpError messages are authored + safe". Until v0.25.0 this particular message interpolated the
+// raw YAML error, which carries the absolute file path — so that assumption was false for this path
+// and the board's own file layout reached any client that could GET a corrupt ticket. A bump that
+// restored the interpolation would re-open it with the whole gate green, which is what this file is
+// for. Asserted as an ABSENCE of the leak, not as an exact string, so upstream stays free to reword.
+describe('pinned ticket-workflow build: unparseable frontmatter does not leak the path', () => {
+  it('rejects with an HttpError that names the ticket but not its filesystem path', async () => {
+    await fs.writeFile(path.join(dirs.tickets, 'tkt-leaky01.md'), '---\n: : not valid: yaml\n---\n', 'utf8');
+    await expect(getTicket('tkt-leaky01')).rejects.toBeInstanceOf(HttpError);
+    const err = await getTicket('tkt-leaky01').catch((e: unknown) => e);
+    const message = err instanceof HttpError ? err.message : String(err);
+    // Positive control: the message must still identify WHICH ticket, or redaction has gone too far
+    // and the error is useless to the client it is returned to.
+    expect(message).toContain('tkt-leaky01');
+    expect(message, `leaks the board path: ${message}`).not.toContain(dirs.tickets);
+    expect(message, `leaks a YAML parser detail: ${message}`).not.toMatch(/line \d+, column \d+/);
+  });
+});
+
 describe('pinned ticket-workflow build: appendBody is non-destructive', () => {
   it('appends to the existing body instead of replacing it', async () => {
     const t = await createTicket({ title: 'A', body: 'first' });
