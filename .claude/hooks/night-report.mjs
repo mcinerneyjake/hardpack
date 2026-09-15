@@ -94,6 +94,14 @@ export function isAlarm(result) {
   return result?.level === 'alarm';
 }
 
+// A `parked` ticket let the queue CONTINUE (tkt-c43474b393de), so nothing downstream stopped to make
+// it visible. It is still `in-progress` and so still outstanding — what this separates is the
+// wording: "stopped mid-ticket" is false of it, and the branch holding the unpushed work is the one
+// thing the human needs and cannot get from the board.
+export function isParked(result) {
+  return result?.level === 'parked';
+}
+
 function readSummary(dir) {
   const parsed = JSON.parse(readFileSync(join(dir, 'summary.json'), 'utf8'));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -169,7 +177,13 @@ export function collect({ root, boardDir, ticketsDir = null, readStatus = status
   const unfinished = [];
   for (const { stamp, summary } of scan.runs) {
     for (const result of summary.results) {
-      note(result?.id, { stamp, level: result?.level ?? null, text: result?.text ?? null });
+      note(result?.id, {
+        stamp,
+        level: result?.level ?? null,
+        text: result?.text ?? null,
+        branch: result?.branch ?? null,
+        repo: result?.repo ?? null,
+      });
     }
     // THE QUEUE, NOT JUST THE RESULTS (review, HIGH). night-run.mjs pushes a result only AFTER a
     // session returns, and its signal handlers (`:388`) call cleanup()+process.exit() WITHOUT
@@ -192,13 +206,28 @@ export function collect({ root, boardDir, ticketsDir = null, readStatus = status
     const status = readStatus(tickets_, entry.id);
     const alarm = entry.verdicts.some(isAlarm);
     if (!isOutstanding(status) && !alarm) continue;
-    tickets.push({ ...entry, status, alarm });
+    // The NEWEST verdict decides, never `.some(isParked)` (review, medium — measured). Verdicts
+    // accumulate across every run directory forever, so any historical park would have removed the
+    // ticket from `halted` permanently: a ticket parked on night 1 and genuinely abandoned on night 2
+    // reported only "PARKED", and the "stopped mid-ticket and need a human" line never appeared.
+    tickets.push({ ...entry, status, alarm, parked: isParked(entry.verdicts[entry.verdicts.length - 1]) });
   }
   return { rootless: false, active, tickets, unfinished, scan };
 }
 
 function list(ids) {
   return ids.join(', ');
+}
+
+// Names the branch and repo the run recorded. A parked ticket whose summary carries neither is still
+// NAMED rather than dropped: the id with an explicit "branch not recorded" is a finding a human can
+// chase, where omitting the line entirely would hide the work this whole carve-out promises to keep
+// visible. The newest verdict wins — a ticket parked on two nights has two, and the older branch may
+// since have merged.
+function describeParked(ticket) {
+  const verdict = [...ticket.verdicts].reverse().find((v) => v.branch);
+  if (!verdict) return `${ticket.id} (branch not recorded — find it by hand)`;
+  return `${ticket.id} on ${verdict.branch}${verdict.repo ? ` in ${verdict.repo}` : ''}`;
 }
 
 /**
@@ -215,7 +244,11 @@ export function assess(collected) {
   // ones folded them into the generic halt line and dropped "the merge gate was crossed" — the most
   // urgent sentence this hook can emit (review, HIGH).
   const alarms = collected.tickets.filter((t) => t.alarm);
-  const halted = collected.tickets.filter((t) => !t.alarm && t.status === 'in-progress');
+  // Parked is carved out of `halted` BEFORE it is counted, not reported alongside it: both are
+  // `in-progress`, so a ticket landing in each list would be named twice and the "needs a human"
+  // count would overstate what is actually stuck.
+  const parked = collected.tickets.filter((t) => !t.alarm && t.parked && t.status === 'in-progress');
+  const halted = collected.tickets.filter((t) => !t.alarm && !t.parked && t.status === 'in-progress');
   const unknown = collected.tickets.filter((t) => !t.alarm && t.status === null);
   const merges = collected.tickets.filter((t) => !t.alarm && t.status === 'qa');
 
@@ -230,9 +263,19 @@ export function assess(collected) {
       `[night-run] ${halted.length} night-run ticket(s) stopped mid-ticket and need a human: ${list(halted.map((t) => t.id))}.`,
     );
   }
+  if (parked.length) {
+    lines.push(
+      `[night-run] ${parked.length} night-run ticket(s) finished but are PARKED at the PR-open gate, committed and unpushed: ` +
+        `${parked.map(describeParked).join('; ')}. Each needs "Ready to open PR?", then a push and \`gh pr create\`.`,
+    );
+  }
   if (unknown.length) {
     lines.push(
-      `[night-run] ${unknown.length} night-run ticket(s) have no readable status on the board: ${list(unknown.map((t) => t.id))}.`,
+      // A parked ticket whose board file later became unreadable lands HERE rather than in `parked`,
+      // and the branch is the one fact only the run knows — so it is named in both buckets or it is
+      // lost exactly when the board can no longer help (review, low).
+      `[night-run] ${unknown.length} night-run ticket(s) have no readable status on the board: ` +
+        `${unknown.map((t) => (t.parked ? describeParked(t) : t.id)).join(', ')}.`,
     );
   }
   if (merges.length) {

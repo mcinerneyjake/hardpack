@@ -85,6 +85,14 @@ export function renderTicket(ticket, prs) {
   const lines = [`${ticket.id}  status: ${ticket.status ?? 'UNREADABLE on the board'}`];
   for (const v of ticket.verdicts) {
     lines.push(`  verdict (${v.stamp}): ${v.level ?? 'unknown'} — ${v.text ?? 'no text recorded'}`);
+    // A parked ticket's work is committed and UNPUSHED, so the PR search below finds nothing for it
+    // and would otherwise print "no PR mentions this id" with no hint that a branch is sitting there
+    // (tkt-c43474b393de). Keyed on the LEVEL, not on `v.branch` alone: a branch recorded beside a
+    // stopping verdict would have this report calling the ticket parked while the SessionStart hook
+    // called the same ticket mid-ticket (review, low).
+    if (v.level === 'parked' && v.branch) {
+      lines.push(`    parked on ${v.branch}${v.repo ? ` in ${v.repo}` : ''} — unpushed, so no PR exists yet`);
+    }
   }
   if (!prs.ok) {
     lines.push(`  PR search FAILED: ${prs.why} — no PR state was determined for this ticket.`);
