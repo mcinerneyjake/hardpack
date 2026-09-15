@@ -528,6 +528,78 @@ function instructionAdditionProblems(claudeMd) {
   return problems;
 }
 
+
+const AUTO_PR_STOP_WHERE = 'SKILL.md\'s `auto-pr` hard stop';
+
+// The bullet's BOLD lead is its CONDITION; the prose after it is rationale, and the two are scanned
+// separately on purpose. A whole-bullet denylist would redden the very sentence that explains why
+// required-ness is the wrong question here (tkt-c60f592675cf).
+const AUTO_PR_CONDITION_MUST_NAME = 'enabled';
+// The condition must state an ABSENCE. `a repo with checks enabled` carries every required token and
+// INVERTS the stop; a token test alone reports it clean (review finding 3).
+const AUTO_PR_CONDITION_POLARITY = /\b(?:no|none|nothing|without|never|zero)\b/i;
+// `gh workflow list --all` reports enabled/disabled. Required-ness comes from rulesets, which 403 on
+// this account's private repos — so a condition naming it is one the bullet's own instrument cannot
+// answer, and the run either denies service permanently or guesses. That mismatch IS the defect.
+// STEMS, not one inflection: `the ruleset requires` and `mandatory checks` both restate the defect
+// while clearing a `\brequired\b` denylist, measured (review finding 2). This file's own lesson at
+// GATE_VALUES is that a denylist measures false-clean — an allowlist over free prose is not available
+// here, so the stems are widened instead and every known bypass is pinned by a control below.
+const AUTO_PR_CONDITION_CANNOT_NAME = /\b(?:requir\w*|mandator\w*|ruleset\w*|blocking)\b/i;
+const AUTO_PR_VERIFIER = 'gh workflow list --all';
+
+// A wrapped bullet is its lead line plus every following non-bullet, non-blank line. A blank line
+// ends it, so a paragraph after the list is never folded into the last bullet.
+function bulletsIn(section) {
+  const fenced = fenceMask(section);
+  const bullets = [];
+  let open = false;
+  section.forEach((line, i) => {
+    if (fenced[i]) return;
+    if (/^\s*[-*]\s/.test(line)) { bullets.push(line.trim()); open = true; return; }
+    if (!line.trim()) { open = false; return; }
+    if (open) bullets[bullets.length - 1] += ` ${line.trim()}`;
+  });
+  return bullets;
+}
+
+function autoPrStopProblems(skillMd) {
+  const { section, headings } = sliceSection(skillMd, 2, /hard stops/i);
+  // Not `[]` — an unfindable section is UNCHECKED, and reporting unchecked as clean is the fail-open
+  // every other checker in this file refuses.
+  if (!section) {
+    return [headings > 1
+      ? `${headings} headings match ${AUTO_PR_STOP_WHERE} — cannot tell which one carries the rule`
+      : `no section found for ${AUTO_PR_STOP_WHERE}`];
+  }
+  const matches = bulletsIn(section).filter((b) => /`auto-pr`/.test(b));
+  if (matches.length !== 1) {
+    return [matches.length > 1
+      ? `${matches.length} bullets match ${AUTO_PR_STOP_WHERE} — cannot tell which one carries the rule`
+      : `no bullet found for ${AUTO_PR_STOP_WHERE}`];
+  }
+  const bullet = matches[0];
+  const problems = [];
+  const condition = bullet.match(/\*\*(.+?)\*\*/);
+  if (!condition) {
+    problems.push(`${AUTO_PR_STOP_WHERE} states no condition in bold, so there is nothing to check it against`);
+  } else {
+    if (AUTO_PR_CONDITION_CANNOT_NAME.test(condition[1])) {
+      problems.push(`${AUTO_PR_STOP_WHERE} conditions on required-ness, which \`${AUTO_PR_VERIFIER}\` cannot report`);
+    }
+    if (!condition[1].includes(AUTO_PR_CONDITION_MUST_NAME)) {
+      problems.push(`${AUTO_PR_STOP_WHERE} does not condition on \`${AUTO_PR_CONDITION_MUST_NAME}\` checks, which is what its instrument answers`);
+    }
+    if (!AUTO_PR_CONDITION_POLARITY.test(condition[1])) {
+      problems.push(`${AUTO_PR_STOP_WHERE} states a condition that is not an absence, so it inverts the stop`);
+    }
+  }
+  if (!bullet.includes(AUTO_PR_VERIFIER)) {
+    problems.push(`${AUTO_PR_STOP_WHERE} names no \`${AUTO_PR_VERIFIER}\` to verify its condition with`);
+  }
+  return problems;
+}
+
 // ---------------------------------------------------------------------------
 // The real files.
 
@@ -595,6 +667,14 @@ describe('hardpack-workflow skill: the real SKILL.md and CLAUDE.md', () => {
 
   it('requires a new instruction to record a claim and the falsifier for it', () => {
     expect(instructionAdditionProblems(REAL_CLAUDE)).toEqual([]);
+  });
+
+  // The condition and the command that verifies it must answer the same question. `gh workflow list
+  // --all` reports enabled/disabled; required-ness comes from rulesets, which 403 on a private repo.
+  // A stop conditioned on the unanswerable half read two ways across three night runs on the same
+  // repos, opening PRs once and stranding committed, gated, reviewed work twice (tkt-c60f592675cf).
+  it('stops auto-pr on a condition its own verification command can answer', () => {
+    expect(autoPrStopProblems(REAL)).toEqual([]);
   });
 
   // The two halves are a pair. Binding only the way IN would let the eviction rule be deleted while
@@ -1110,6 +1190,143 @@ describe('the addition-rule checker itself', () => {
       `${ADDITION_RULE_WHERE} does not carry the instrument`,
       `${ADDITION_RULE_WHERE} does not carry a \`Falsifier\` line`,
       `${ADDITION_RULE_WHERE} does not carry the \`unmeasured\` landing state`,
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Controls on the auto-pr hard-stop checker. One case per DIMENSION of the state the rule lives in —
+// absent / duplicated / fenced heading, absent / duplicated / fenced bullet, the bold condition and
+// each of its two halves, the verifier, the slice boundary, and the bullet-folding rule that decides
+// what counts as "in" the bullet — rather than several samples of the same point.
+
+const AUTO_PR_BULLET =
+  '- **In `auto-pr`: a repo with no enabled checks at all.** Verify with `gh workflow list --all`.';
+const autoPrDoc = (...lines) =>
+  ['## 14. Hard stops', '', '- A quality-gate failure.', ...lines, '', '## 15. Close the ticket'].join('\n');
+
+describe('the auto-pr hard-stop checker itself', () => {
+  it('passes a correct bullet — so the flags below are not fired by everything', () => {
+    expect(autoPrStopProblems(autoPrDoc(AUTO_PR_BULLET))).toEqual([]);
+  });
+
+  it('reports a MISSING section rather than returning clean', () => {
+    const md = ['## 13. The gates', '', '- Nothing about stops here.', '', '## 15. Close'].join('\n');
+    expect(autoPrStopProblems(md)).toEqual([`no section found for ${AUTO_PR_STOP_WHERE}`]);
+  });
+
+  it('refuses to guess when two headings match', () => {
+    const md = [autoPrDoc(AUTO_PR_BULLET), '', '## 14b. Hard stops', '', AUTO_PR_BULLET].join('\n');
+    expect(autoPrStopProblems(md)).toEqual([
+      `2 headings match ${AUTO_PR_STOP_WHERE} — cannot tell which one carries the rule`,
+    ]);
+  });
+
+  it('does not read a FENCED heading as the real section', () => {
+    const md = ['## 13. The gates', '', '```markdown', '## 14. Hard stops', AUTO_PR_BULLET, '```'].join('\n');
+    expect(autoPrStopProblems(md)).toEqual([`no section found for ${AUTO_PR_STOP_WHERE}`]);
+  });
+
+  // The bullet DELETED is the shape a reworded-away rule takes, and it must not read as clean.
+  it('reports a DELETED bullet rather than returning clean', () => {
+    expect(autoPrStopProblems(autoPrDoc('- A red check.'))).toEqual([
+      `no bullet found for ${AUTO_PR_STOP_WHERE}`,
+    ]);
+  });
+
+  it('refuses to guess between two auto-pr bullets in one section', () => {
+    expect(autoPrStopProblems(autoPrDoc(AUTO_PR_BULLET, AUTO_PR_BULLET))).toEqual([
+      `2 bullets match ${AUTO_PR_STOP_WHERE} — cannot tell which one carries the rule`,
+    ]);
+  });
+
+  it('does not credit a bullet supplied only by a fenced example', () => {
+    expect(autoPrStopProblems(autoPrDoc('```markdown', AUTO_PR_BULLET, '```'))).toEqual([
+      `no bullet found for ${AUTO_PR_STOP_WHERE}`,
+    ]);
+  });
+
+  // The slice must BOUND the scan: `auto-pr` is named in the gate table and the handoff prose, so a
+  // whole-file scan would be satisfied by those without §14 carrying a stop at all.
+  it('does not credit an auto-pr bullet outside the section', () => {
+    const md = [autoPrDoc('- A red check.'), '', '## 16. Loop', '', AUTO_PR_BULLET].join('\n');
+    expect(autoPrStopProblems(md)).toEqual([`no bullet found for ${AUTO_PR_STOP_WHERE}`]);
+  });
+
+  it('flags a bullet that states no condition in bold', () => {
+    const md = autoPrDoc('- In `auto-pr`: a repo with no enabled checks. Verify with `gh workflow list --all`.');
+    expect(autoPrStopProblems(md)).toEqual([
+      `${AUTO_PR_STOP_WHERE} states no condition in bold, so there is nothing to check it against`,
+    ]);
+  });
+
+  // THE DEFECT (tkt-c60f592675cf). `gh workflow list --all` cannot report required-ness.
+  it('flags a condition on required-ness, which its own verifier cannot answer', () => {
+    const md = autoPrDoc(
+      '- **In `auto-pr`: a repo with no enabled required checks.** Verify with `gh workflow list --all`.',
+    );
+    expect(autoPrStopProblems(md)).toEqual([
+      `${AUTO_PR_STOP_WHERE} conditions on required-ness, which \`${AUTO_PR_VERIFIER}\` cannot report`,
+    ]);
+  });
+
+  // Dropping the word entirely is not a fix: the condition must still name what the instrument answers.
+  it('flags a condition that names neither property', () => {
+    const md = autoPrDoc('- **In `auto-pr`: a repo with no checks.** Verify with `gh workflow list --all`.');
+    expect(autoPrStopProblems(md)).toEqual([
+      `${AUTO_PR_STOP_WHERE} does not condition on \`enabled\` checks, which is what its instrument answers`,
+    ]);
+  });
+
+  it('flags a bullet that names no verification command', () => {
+    expect(autoPrStopProblems(autoPrDoc('- **In `auto-pr`: a repo with no enabled checks at all.**'))).toEqual([
+      `${AUTO_PR_STOP_WHERE} names no \`${AUTO_PR_VERIFIER}\` to verify its condition with`,
+    ]);
+  });
+
+  // Each bypass the tkt-c60f592675cf review MEASURED against the first cut of this checker, pinned so
+  // a narrowing back to `\brequired\b` reddens instead of passing. One case per inflection, because a
+  // loop asserting "some wording is caught" passes on any one of them alone.
+  for (const bypass of [
+    'a repo with no enabled checks the ruleset requires.',
+    'a repo with no enabled mandatory checks.',
+    'a repo with no enabled required checks.',
+    'a repo with no enabled blocking checks.',
+  ]) {
+    it(`flags the required-ness restatement \`${bypass}\``, () => {
+      expect(autoPrStopProblems(autoPrDoc(`- **In \`auto-pr\`: ${bypass}** Verify with \`gh workflow list --all\`.`))).toEqual([
+        `${AUTO_PR_STOP_WHERE} conditions on required-ness, which \`${AUTO_PR_VERIFIER}\` cannot report`,
+      ]);
+    });
+  }
+
+  // Polarity, the dimension a token test cannot see: the word is PRESENT and the meaning reversed.
+  // Both of these returned clean from the first cut (review finding 3).
+  for (const inverted of ['a repo with checks enabled.', 'anything enabled whatsoever.']) {
+    it(`flags the inverted condition \`${inverted}\``, () => {
+      expect(autoPrStopProblems(autoPrDoc(`- **In \`auto-pr\`: ${inverted}** Verify with \`gh workflow list --all\`.`))).toEqual([
+        `${AUTO_PR_STOP_WHERE} states a condition that is not an absence, so it inverts the stop`,
+      ]);
+    });
+  }
+
+  // Folding, both directions. The real bullet WRAPS, so a checker that read only the lead line would
+  // report the verifier missing on a correct file...
+  it('folds a wrapped continuation into the bullet', () => {
+    const md = autoPrDoc('- **In `auto-pr`: a repo with no enabled checks at all.**', '  Verify with `gh workflow list --all`.');
+    expect(autoPrStopProblems(md)).toEqual([]);
+  });
+
+  // ...and one that folded EVERYTHING would be satisfied by unrelated prose after the list, which is
+  // the fail-open half of the same decision.
+  it('does not fold a following paragraph into the last bullet', () => {
+    const md = autoPrDoc(
+      '- **In `auto-pr`: a repo with no enabled checks at all.**',
+      '',
+      'Separately, `gh workflow list --all` is also useful elsewhere.',
+    );
+    expect(autoPrStopProblems(md)).toEqual([
+      `${AUTO_PR_STOP_WHERE} names no \`${AUTO_PR_VERIFIER}\` to verify its condition with`,
     ]);
   });
 });
