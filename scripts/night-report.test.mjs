@@ -252,6 +252,35 @@ describe('night:report argument handling', () => {
     const lines = renderTicket({ id: ID, status: null, verdicts: [] }, { ok: true, matches: [] });
     expect(lines[0]).toContain('UNREADABLE on the board');
   });
+
+  // tkt-c43474b393de. Parked work is UNPUSHED, so the PR search finds nothing and the report would
+  // otherwise print "no PR mentions this id" with no hint that a branch is sitting there.
+  it('names the branch of a ticket parked at the PR-open gate', () => {
+    const verdicts = [{ stamp: 's', level: 'parked', text: 'parked', branch: 'feat/x-thing', repo: '/repos/hardpack-site' }];
+    const lines = renderTicket({ id: ID, status: 'in-progress', verdicts }, { ok: true, matches: [] }).join('\n');
+
+    expect(lines).toContain('feat/x-thing');
+    expect(lines).toContain('/repos/hardpack-site');
+    expect(lines).toContain('no PR');
+  });
+
+  // The control: an ordinary verdict carries no branch and must not grow a parked line.
+  it('does not claim a parked branch for an ordinary verdict', () => {
+    const verdicts = [{ stamp: 's', level: 'halt', text: 'stopped mid-ticket; needs a human' }];
+    const lines = renderTicket({ id: ID, status: 'in-progress', verdicts }, { ok: true, matches: [] }).join('\n');
+
+    expect(lines).not.toContain('parked on');
+  });
+
+  // Keyed on the LEVEL, not on the branch's presence: a branch recorded beside a STOPPING verdict had
+  // this report calling the ticket parked while the SessionStart hook called it mid-ticket — two
+  // reports contradicting each other over one ticket (review, low).
+  it('does not call a stopping verdict parked merely because a branch was recorded', () => {
+    const verdicts = [{ stamp: 's', level: 'note', text: 'no status before the run', branch: 'feat/x', repo: '/r' }];
+    const lines = renderTicket({ id: ID, status: 'in-progress', verdicts }, { ok: true, matches: [] }).join('\n');
+
+    expect(lines).not.toContain('parked on');
+  });
 });
 
 describe('night:report never reports a scan it could not complete as clean', () => {

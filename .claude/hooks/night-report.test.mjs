@@ -303,6 +303,154 @@ describe('night-report hook: cases the review found silent', () => {
   });
 });
 
+// tkt-c43474b393de. A `parked` ticket let the queue CONTINUE, so nothing downstream stopped to make
+// it visible — this hook is the only thing that does, and the unpushed branch is the one fact a
+// human needs that the board does not carry.
+describe('night-report hook: tickets parked at the PR-open gate', () => {
+  const parkedRun = (id, extra = {}) =>
+    seedRun('2026-09-03T01-00-00-000Z', {
+      startedAt: 'x',
+      queue: [id],
+      results: [{
+        id,
+        before: 'todo',
+        after: 'in-progress',
+        level: 'parked',
+        text: 'finished the work and stopped at the PR-open gate',
+        log: `${id}.log`,
+        ...extra,
+      }],
+      exit: 0,
+    });
+
+  it('names a parked ticket, its branch and its repo', () => {
+    parkedRun(ID, { branch: 'feat/x-thing', repo: '/repos/portfolio-site' });
+    seedTicket(ID, 'in-progress');
+
+    const line = run().join(' ');
+    expect(line).toContain(ID);
+    expect(line).toContain('feat/x-thing');
+    expect(line).toContain('/repos/portfolio-site');
+    expect(line).toMatch(/PARKED/);
+  });
+
+  // The whole promise of the carve-out: continuing the queue must not make the work invisible.
+  it('a parked ticket is still OUTSTANDING', () => {
+    parkedRun(ID, { branch: 'feat/x', repo: '/r' });
+    seedTicket(ID, 'in-progress');
+
+    expect(collect({ root, boardDir: root }).tickets.map((t) => t.id)).toContain(ID);
+  });
+
+  // Both are `in-progress`, so without the carve-out in the filter a parked ticket is named twice
+  // and the "needs a human" count overstates what is actually stuck.
+  it('a parked ticket is not also counted as stopped mid-ticket', () => {
+    parkedRun(ID, { branch: 'feat/x', repo: '/r' });
+    seedTicket(ID, 'in-progress');
+
+    const halted = run().filter((l) => /stopped mid-ticket/.test(l));
+    expect(halted).toEqual([]);
+  });
+
+  // The control: an ordinary halt is untouched by any of this and still reads as mid-ticket.
+  it('an ordinary halt still reports as stopped mid-ticket', () => {
+    oneTicketNight(ID, { level: 'halt' });
+    seedTicket(ID, 'in-progress');
+
+    expect(run().join(' ')).toMatch(/stopped mid-ticket/);
+  });
+
+  // Dropping the line when the branch is missing would hide exactly the work this exists to keep
+  // visible, so the id is named either way and the gap is stated.
+  it('a parked ticket with no recorded branch is still named', () => {
+    parkedRun(ID);
+    seedTicket(ID, 'in-progress');
+
+    const line = run().join(' ');
+    expect(line).toContain(ID);
+    expect(line).toMatch(/branch not recorded/);
+  });
+
+  // THE STALE-PARK HOLE (review, medium — measured). Verdicts accumulate across every run directory
+  // forever, so `.some(isParked)` let ANY historical park remove the ticket from `halted`
+  // permanently: parked on night 1, genuinely abandoned on night 2, and the "needs a human" line
+  // never appeared again.
+  it('a park on an earlier night does not suppress a later genuine halt', () => {
+    seedRun('2026-09-01T00-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 0,
+      results: [{ id: ID, level: 'parked', text: 'p', branch: 'feat/night1', repo: '/r' }],
+    });
+    seedRun('2026-09-02T00-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 2,
+      results: [{ id: ID, level: 'halt', text: 'stopped mid-ticket; needs a human' }],
+    });
+    seedTicket(ID, 'in-progress');
+
+    const lines = run().join(' ');
+    expect(lines).toMatch(/stopped mid-ticket/);
+    expect(lines, 'a stale park still claimed the ticket was parked').not.toMatch(/PARKED/);
+  });
+
+  // The other direction: a halt on night 1 must not suppress tonight's genuine park either.
+  it('a halt on an earlier night does not suppress a later park', () => {
+    seedRun('2026-09-01T00-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 2,
+      results: [{ id: ID, level: 'halt', text: 'stopped mid-ticket; needs a human' }],
+    });
+    seedRun('2026-09-02T00-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 0,
+      results: [{ id: ID, level: 'parked', text: 'p', branch: 'feat/night2', repo: '/r' }],
+    });
+    seedTicket(ID, 'in-progress');
+
+    const lines = run().join(' ');
+    expect(lines).toMatch(/PARKED/);
+    expect(lines).toContain('feat/night2');
+    expect(lines).not.toMatch(/stopped mid-ticket/);
+  });
+
+  // A parked ticket whose board file later became unreadable lands in the `unknown` bucket, and the
+  // branch is the one fact only the run knows — so it must survive there too (review, low).
+  it('names the parked branch even when the board status is unreadable', () => {
+    parkedRun(ID, { branch: 'feat/x-thing', repo: '/repos/r' });
+
+    const lines = run().join(' ');
+    expect(lines).toMatch(/no readable status/);
+    expect(lines).toContain('feat/x-thing');
+  });
+
+  // A ticket parked twice carries two verdicts, and the older branch may since have merged.
+  it('names the newest branch when a ticket was parked on two nights', () => {
+    seedRun('2026-09-03T01-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 0,
+      results: [{ id: ID, level: 'parked', text: 't', branch: 'feat/old', repo: '/r' }],
+    });
+    seedRun('2026-09-04T01-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 0,
+      results: [{ id: ID, level: 'parked', text: 't', branch: 'feat/new', repo: '/r' }],
+    });
+    seedTicket(ID, 'in-progress');
+
+    const line = run().join(' ');
+    expect(line).toContain('feat/new');
+    expect(line).not.toContain('feat/old');
+  });
+
+  // An alarm outranks everything: a parked verdict on the same ticket must not hide it.
+  it('an alarm on a parked ticket is still reported as an alarm', () => {
+    seedRun('2026-09-03T01-00-00-000Z', {
+      startedAt: 'x', queue: [ID], exit: 3,
+      results: [
+        { id: ID, level: 'parked', text: 't', branch: 'feat/x', repo: '/r' },
+        { id: ID, level: 'alarm', text: 'ticket is DONE' },
+      ],
+    });
+    seedTicket(ID, 'done');
+
+    expect(run().join(' ')).toMatch(/ALARM/);
+  });
+});
+
 describe('night-report hook: board resolution', () => {
   it('gives TICKETS_DIR_OVERRIDE precedence over BOARD_DIR_OVERRIDE, as CLAUDE.md requires', () => {
     expect(ticketsDirFor('/board', { TICKETS_DIR_OVERRIDE: '/elsewhere' })).toBe('/elsewhere');
