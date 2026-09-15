@@ -14,6 +14,7 @@
     "agent": "tsx agent/index.ts",
     "agent:search": "tsx agent/searchDemo.ts",
     "agent:record": "tsx agent/recordRun.ts",
+    "retro": "tsx agent/retro/cli.ts",
     "eval:retrieval": "tsx agent/eval/retrievalEval.ts",
     "terminal:clean": "tsx scripts/terminal-clean.ts",
     "ticket": "tsx scripts/ticket.ts",
