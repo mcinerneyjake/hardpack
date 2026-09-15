@@ -215,6 +215,19 @@ describe('.claude/settings.json permission allowlist', () => {
       // Run on the feature branch, where the case above proves the command is otherwise allowed.
       const blinded = fire({ GIT_CEILING_DIRECTORIES: repo, GIT_CONFIG_PARAMETERS: "'garbage'" });
       expect(blinded.status, `an unresolvable branch must fail CLOSED, got ${blinded.status}`).toBe(2);
+
+      // A payload the guard cannot PARSE is the other way it can be blinded, and since
+      // ticket-workflow v0.25.0 it fails closed on every command rather than only commit/push
+      // (tkt-9782083b72c2). Before that the catch exited 0, so an unreadable payload waved through
+      // `git commit` on main. Nothing else in this repo pins it: a revert to fail-open upstream
+      // would restore that bypass with the whole suite green.
+      const unparseable = spawnSync('node', [hook], {
+        input: 'not json',
+        cwd: repo,
+        env: hermeticEnv(),
+        encoding: 'utf8',
+      });
+      expect(unparseable.status, `an unreadable payload must fail CLOSED, got ${unparseable.status}`).toBe(2);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

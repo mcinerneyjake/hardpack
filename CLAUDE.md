@@ -281,8 +281,12 @@ gate, which is what keeps them crossable where `AskUserQuestion` is unavailable.
 
 **Enforced locally:** `.claude/hooks/guard-bash.mjs` blocks the dangerous *shapes* — `git add -A`/`.`,
 `commit -a`, commits and pushes to `main`, force-push, `branch -D`, `reset --hard`, `clean -f`,
-`checkout -f` — and **fails closed** on `commit`/`push` when it cannot resolve the branch. **Fix the
-environment if you hit that; never route around the guard.** `.claude/settings.audit.test.mjs` is the
+`checkout -f` — and **fails closed** on `commit`/`push` when it cannot resolve the branch. Since
+`ticket-workflow` v0.25.0 it also fails closed on **every** Bash command when the hook payload itself
+is unreadable — measured through this repo's launcher: garbage on stdin exits **2** with
+`BLOCKED — unusable hook payload`, a valid payload exits 0 (`tkt-9782083b72c2`). So a block here is
+not necessarily about a git shape at all, and an exit 2 on an innocuous command is the guard refusing
+to guess rather than a bug. **Fix the environment if you hit that; never route around the guard.** `.claude/settings.audit.test.mjs` is the
 executable record of the permission model — read it rather than a summary.
 
 **What guards `gh` is not nothing, and is not everything — do not round it to either.** The pinned
