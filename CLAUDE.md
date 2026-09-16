@@ -433,18 +433,27 @@ shown useless later (`tkt-b6879d3f5daf`). So a new tenet, rule or directive adde
   supplies the answer and is true by construction in every arm.
 
 **Run `scripts/probe/clean-room.mjs` for the verdict; never recall one** — it is mutable external
-state. **Its arms are not yet the right instrument for a rule in *this* file:** `probe()` runs both in
-a neutral temp cwd, deliberately, so no project `CLAUDE.md` is loaded in either arm — which measures
-**user-scope** instructions and would report a repo-scoped one `INSTRUMENT_BROKEN` rather than absent.
-Recording the falsifier is therefore the whole deliverable today; running it needs that cwd handling
-fixed first.
+state, and a verdict quoted in this file or off a ticket is a recollection. **A rule in *this* file is
+measured with `--scope project`** (`tkt-2a7055ddd5ea`). The neutral temp cwd did not go away, it
+**moved to the arm that must not see the scope under test**: the control arm runs with the repository
+as its working directory, the isolated arm from the neutral dir, and `--bare` is applied to neither —
+so user-scope instructions load identically in both arms and are held constant. A bare
+`clean-room.mjs` still measures **user scope**, with the arm layout it always had — but not every
+path is unchanged: `assertNeutralDir` now throws in **both** scopes when `TMPDIR` sits at or below
+any directory holding a `CLAUDE.md`.
+
+**A `project` verdict attributes the rule to the working directory, never to this file alone.** The
+cwd swap is broad by construction, moving every cwd-derived input at once — this `CLAUDE.md`, every
+`CLAUDE.md` above it, project settings, hooks, skills, MCP servers and per-project memory. Identify
+which of those actually carries the rule before editing anything for an A/B.
 
 **While the probe is not `CLEAN`, the instruction lands `unmeasured` and the summary says so.** It is
-not blocked: a gate conditioned on a verdict the probe cannot currently produce could never pass, and
-would deny service. What is forbidden is the *claim* — an `unmeasured` instruction may never be
-described as justified, validated or shown to work. Those recorded pairs are the queue that gets
-A/B'd first on the day the probe goes green.
+not blocked: a gate conditioned on a verdict the probe cannot produce for that scope could never
+pass, and would deny service. What is forbidden is the *claim* — an `unmeasured` instruction may
+never be described as justified, validated or shown to work. Those recorded pairs are the queue to
+A/B first, starting with the repo-scoped ones `--scope project` can now put to both arms.
 
 **Nothing enforces this.** `skillContract.test.mjs` binds that this section exists, still names
-**Claim** and **Falsifier**, and still says it is unenforced — a rewrite reversing its meaning passes
-green, and no test can read what a session actually did.
+**Claim** and **Falsifier**, still says it is unenforced, and still names a `--scope` flag the probe
+actually defines — a rewrite reversing its meaning passes green, and no test can read what a session
+actually did.

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SCOPE } from './scripts/probe/clean-room.mjs';
 
 // Binds the /hardpack-workflow skill's SKILL.md to this repo's CLAUDE.md. Five surfaces survive the
 // tkt-5a4ff25d4e74 trim, kept by one rule: a drift in each would be SILENT. The rest were dropped
@@ -528,6 +529,55 @@ function instructionAdditionProblems(claudeMd) {
   return problems;
 }
 
+// The section tells a session to measure a rule in THIS file with a literal `--scope <value>`. The
+// VALUE is derived from `clean-room.mjs`'s own allowlist rather than compared to a copy here, so
+// renaming `SCOPE.PROJECT`'s value reddens this — which `clean-room.test.mjs` cannot see, because it
+// uses the symbol (tkt-f3687a314b7a). The FLAG NAME `--scope` is NOT derived: nothing exports it, so
+// renaming the flag alone leaves this green while the documented invocation silently degrades to a
+// user-scope run. Do not read this checker as covering that; it is tracked separately.
+//
+// The project-scope requirement is anchored to a BOLD claim, for the same reason
+// `instructionAdditionProblems` anchors its tokens to their bullets: the real section names the flag
+// more than once, and an unanchored token is satisfied by an incidental mention while the
+// load-bearing sentence says the opposite. Measured — the pre-ticket claim "cannot be measured at
+// all" left the unanchored version 100/100 green.
+const BOLD_SPAN = /\*\*([\s\S]+?)\*\*/g;
+// Backticks required: the file writes flags as code, and an unbackticked scan reads `the --scope
+// flag` as a scope literally named `flag` and blames a value nobody wrote.
+const SCOPE_FLAG = /`--scope\s+([A-Za-z-]+)`/g;
+// A bold claim can name the flag while DENYING it, which is the shape of the sentence this ticket
+// replaced. Same device as AUTO_PR_CONDITION_POLARITY above.
+const SCOPE_NEGATED = /\b(?:cannot|can not|can't|never|not|no longer|unable|instead of)\b/i;
+
+function scopeFlagProblems(claudeMd) {
+  const { section, headings } = sliceSection(claudeMd, 3, /adding an instruction/i);
+  if (!section) {
+    return [headings > 1
+      ? `${headings} headings match ${ADDITION_RULE_WHERE} — cannot tell which one carries the rule`
+      : `no section found for ${ADDITION_RULE_WHERE}`];
+  }
+  const fenced = fenceMask(section);
+  const text = section.filter((_, i) => !fenced[i]).join('\n');
+  const known = Object.values(SCOPE);
+
+  // Unknown VALUES are flagged wherever they appear — a rotted flag in plain prose misdirects a
+  // reader just as well as one in the bold claim.
+  const problems = [...text.matchAll(SCOPE_FLAG)]
+    .map((m) => m[1])
+    .filter((scope) => !known.includes(scope))
+    .map((scope) => `${ADDITION_RULE_WHERE} names --scope ${scope}, which clean-room.mjs does not define`);
+
+  const boldNaming = [...text.matchAll(BOLD_SPAN)]
+    .map((m) => m[1])
+    .filter((span) => [...span.matchAll(SCOPE_FLAG)].some((m) => m[1] === SCOPE.PROJECT));
+  if (boldNaming.length === 0) {
+    problems.push(`${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`);
+  } else if (boldNaming.every((span) => SCOPE_NEGATED.test(span))) {
+    problems.push(`${ADDITION_RULE_WHERE} names --scope ${SCOPE.PROJECT} only in a negated claim`);
+  }
+  return problems;
+}
+
 
 const AUTO_PR_STOP_WHERE = 'SKILL.md\'s `auto-pr` hard stop';
 
@@ -667,6 +717,10 @@ describe('hardpack-workflow skill: the real SKILL.md and CLAUDE.md', () => {
 
   it('requires a new instruction to record a claim and the falsifier for it', () => {
     expect(instructionAdditionProblems(REAL_CLAUDE)).toEqual([]);
+  });
+
+  it('names a --scope flag clean-room.mjs actually defines', () => {
+    expect(scopeFlagProblems(REAL_CLAUDE)).toEqual([]);
   });
 
   // The condition and the command that verifies it must answer the same question. `gh workflow list
@@ -1191,6 +1245,117 @@ describe('the addition-rule checker itself', () => {
       `${ADDITION_RULE_WHERE} does not carry a \`Falsifier\` line`,
       `${ADDITION_RULE_WHERE} does not carry the \`unmeasured\` landing state`,
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Controls on the scope-flag checker. One case per DIMENSION: absent / duplicated heading, no flag,
+// a flag the probe does not define, a VALID flag naming the wrong scope, a flag reachable only from
+// a fenced or an indented block, a flag named only OUTSIDE a bold claim, a bold claim that NEGATES
+// it, and the two-mention shape — an incidental mention beside a load-bearing sentence saying the
+// opposite, which is the regression the unanchored first cut of this checker passed green.
+
+const CLAIM = (scope) => `**A rule in *this* file is measured with \`--scope ${scope}\`.**`;
+const scopeDoc = (...lines) => additionDoc(...ADDITION_GOOD, ...lines);
+
+describe('the scope-flag checker itself', () => {
+  it('passes a bold claim naming the project scope — so the flags below are not fired by everything', () => {
+    expect(scopeFlagProblems(scopeDoc(CLAIM(SCOPE.PROJECT)))).toEqual([]);
+  });
+
+  it('flags a repealed section rather than reporting it clean', () => {
+    const md = ['## Conventions, structure and probes', '', 'Nothing about adding rules here.'].join('\n');
+    expect(scopeFlagProblems(md)).toEqual([`no section found for ${ADDITION_RULE_WHERE}`]);
+  });
+
+  // The sibling checker has this control; the copied branch would otherwise be unreachable or wrong
+  // with nothing saying so (review finding 5).
+  it('flags two matching headings instead of picking one', () => {
+    const md = [
+      '## Conventions, structure and probes', '', ADDITION_HEADING, '', CLAIM(SCOPE.PROJECT),
+      '', ADDITION_HEADING, '', CLAIM(SCOPE.PROJECT),
+    ].join('\n');
+    expect(scopeFlagProblems(md)).toEqual([
+      `2 headings match ${ADDITION_RULE_WHERE} — cannot tell which one carries the rule`,
+    ]);
+  });
+
+  // The regression this whole checker exists for: the paragraph before tkt-f3687a314b7a named no
+  // flag and told sessions the probe could not measure a rule in this file at all.
+  it('flags a section that names no --scope flag', () => {
+    expect(scopeFlagProblems(scopeDoc('Running it needs the cwd handling fixed first.'))).toEqual([
+      `${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`,
+    ]);
+  });
+
+  // THE dimension the first cut never sampled, and the one that made it vacuous: the real section
+  // mentions the flag twice, so an unanchored check stayed green while the load-bearing sentence was
+  // rewritten to the pre-ticket claim. Verified by execution before this control existed.
+  it('flags a load-bearing denial that an incidental mention would otherwise excuse', () => {
+    const md = scopeDoc(
+      '**A rule in *this* file cannot be measured at all; the cwd handling needs fixing first.**',
+      'Those pairs are the queue, starting with the ones `--scope project` can now put to both arms.',
+    );
+    expect(scopeFlagProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`,
+    ]);
+  });
+
+  // Naming it inside the bold claim is not enough if the claim DENIES it.
+  it('flags a bold claim that names the project scope only to negate it', () => {
+    const md = scopeDoc(`**Never reach for \`--scope ${SCOPE.PROJECT}\` — it cannot measure a rule here.**`);
+    expect(scopeFlagProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} names --scope ${SCOPE.PROJECT} only in a negated claim`,
+    ]);
+  });
+
+  // The rename case. Derived from SCOPE, so this reddens the moment the probe stops defining the
+  // value the doc prints — which is exactly what clean-room.test.mjs cannot see.
+  it('flags a --scope value clean-room.mjs does not define', () => {
+    expect(scopeFlagProblems(scopeDoc('**Measured with `--scope repo`.**'))).toEqual([
+      `${ADDITION_RULE_WHERE} names --scope repo, which clean-room.mjs does not define`,
+      `${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`,
+    ]);
+  });
+
+  // A valid flag is not a correct one: `user` passes the allowlist half and still leaves the section
+  // saying nothing about whether a rule in THIS file can be measured.
+  it('flags a valid flag that names the wrong scope', () => {
+    expect(scopeFlagProblems(scopeDoc(CLAIM(SCOPE.USER)))).toEqual([
+      `${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`,
+    ]);
+  });
+
+  // Fenced text is an EXAMPLE, not the instruction — the same rule the token checker above follows.
+  it('does not credit a flag reachable only from inside a code fence', () => {
+    const md = scopeDoc('```bash', `node scripts/probe/clean-room.mjs --scope ${SCOPE.PROJECT}`, '```');
+    expect(scopeFlagProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`,
+    ]);
+  });
+
+  // fenceMask toggles only on fence markers, so an INDENTED block is not masked (review finding 4).
+  // The bold anchor is what excludes it — this pins that, since a future unanchored edit would
+  // silently credit an indented example as the instruction.
+  it('does not credit a flag reachable only from an indented block', () => {
+    const md = scopeDoc('', `    node scripts/probe/clean-room.mjs --scope ${SCOPE.PROJECT}`, '');
+    expect(scopeFlagProblems(md)).toEqual([
+      `${ADDITION_RULE_WHERE} makes no bold claim naming --scope ${SCOPE.PROJECT}, so it does not say a rule in this file is measurable`,
+    ]);
+  });
+
+  // Backticks required, or `the --scope flag` reads as a scope named `flag` and the gate reddens
+  // blaming a value nobody wrote (review finding 3).
+  it('does not read unbackticked prose as a scope value', () => {
+    expect(scopeFlagProblems(scopeDoc(CLAIM(SCOPE.PROJECT), 'The --scope flag is required.'))).toEqual([]);
+  });
+
+  // Two valid flags must not read as a conflict. NOTE: the real CLAUDE.md does NOT have this shape —
+  // it writes the bare run as prose ("still measures **user scope**"), so the real doc yields the
+  // project scope alone. This pins a checker property, not the file's current wording.
+  it('accepts both scopes named together', () => {
+    const md = scopeDoc(CLAIM(SCOPE.PROJECT), `A bare run is \`--scope ${SCOPE.USER}\`.`);
+    expect(scopeFlagProblems(md)).toEqual([]);
   });
 });
 
