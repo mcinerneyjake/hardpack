@@ -25,6 +25,12 @@ changes skip tests, they do **not** skip the review gate.
    `description` = `[priority] type`, plus a final "Skip").
 6. On a pick, `start_ticket` — it marks in-progress and returns the body in one call.
 
+**Before step 4 or 6, sync the primary.** `start_ticket` arms `guard-worktree`, which then refuses a
+pull in the primary — and the previous ticket's session, armed, could only fetch. So if the cwd is
+the primary checkout, it is on `main` and `git status --porcelain` shows nothing tracked, run
+`git pull --ff-only` first. On any other branch or a dirty tree, **do not switch**: say so and leave
+it — that is likely a paused session's work. In a worktree there is nothing to sync.
+
 Nothing `todo` → show the summary and wait. **Escape hatch:** a meta, analysis, planning or
 configuration request with no ticket implied skips the board load and is answered directly, **step 3
 included**.
@@ -235,6 +241,40 @@ machine-local, so the policy below is the default wherever the hook can't reach.
 Two sessions sharing one working tree is not safe — whichever stages a shared file first absorbs the
 other's in-flight edits. Use `EnterWorktree`/`ExitWorktree`, not a hand-rolled convention.
 
+**Partly enforced machine-wide by `guard-worktree`, once a session calls `mcp__kanban__start_ticket`**
+(`tkt-ad0806bc834f`). That exact tool name arms the session — the `npm run ticket` fallback never
+does. Once armed, an `Edit`/`Write`/`NotebookEdit` into any repo's **primary** checkout exits 2, as
+does a git verb outside the guard's read-only allowlist run there — `checkout`, `switch`, `pull`,
+`commit`. **Every `git stash` form except `list`/`show` exits 2 from anywhere**, `apply <sha>` and
+`drop` included, because `refs/stash` is shared by every worktree: commit to the branch instead. The
+wiring is user-scope and unversioned, so whether *this* machine carries it is state — check
+`~/.claude/settings.json` for a `guard-worktree` PreToolUse entry rather than trusting this paragraph.
+**What it does not enforce, measured:**
+
+- **Allowlisted verbs still mutate.** `remote`, `fetch`, `push` and `worktree` pass in a primary, so
+  `git remote add`, `git fetch origin main:main`, `git push origin --delete` and a non-forced
+  `git worktree remove`/`prune` all exit 0. The guard assumes worktrees are locked, but neither
+  `EnterWorktree` nor a night run locks one, so an armed session can remove any concurrent session's
+  clean worktree.
+- **Indirection walks past it.** `bash -c "git checkout …"`, `eval`, an absolute `/usr/bin/git`, and
+  non-git writes (`sed -i`, `>`, heredocs, `npm install`, anything inside `$(…)`) are never judged.
+- **Arming is per session id.** Nothing arms before `start_ticket`, so isolating first (below) is
+  still yours; a mid-ticket `/clear` mints a new id and disarms; a payload with no `session_id` is
+  allowed even while armed.
+- **The primary is off-limits to armed writes, ignored files included.** The guard judges the
+  checkout, not whether a path is tracked: a temporary script at the primary's root and a
+  `retros/<sessionId>.md` disposition there both exit 2. Do those from an unarmed session, or put the
+  script in your worktree.
+- **Two states wedge every Edit and Bash call on the machine, armed or not:** an unparseable hook
+  payload, and a `~/.claude/state/worktree-guard/` path that cannot be *searched* (no `x` bit on it or
+  a parent, or not a directory) — for any payload carrying a well-formed `session_id`. Fix the environment; never route around it.
+- **Two installs, two tests.** `server/packageContract.test.ts` pins, in *this repo's* install, the
+  Edit verdicts and the Bash verdicts the merge steps below depend on. The wired hook loads
+  `~/.claude/tools`, whose pin `.claude/settings.audit.test.mjs` keeps equal to this one; that file
+  also requires both wiring entries and a byte-identical copy of `hooks/guard-worktree-precheck.mjs`.
+  Bumping the tools pin means re-copying the precheck; `ticket-workflow doctor` reports a stale copy
+  as `none drifted`, because it classifies the file as a launcher.
+
 **Isolate before you branch, not after** — the order is the whole protection, and it is cheap to get
 backwards because the ticket is already in hand when the thought occurs. A branch cut in the primary
 has already put this session's name on the shared tree; moving to a worktree afterwards leaves the
@@ -267,7 +307,8 @@ PRs #374 → #375).
   primary holds `main`: branch from `origin/main` after a fetch.
 - **`gh pr merge --delete-branch` errors from a worktree and the merge still landed. Do not retry.**
   Confirm `gh pr view <n> --json state` is `MERGED`, then `git push origin --delete <branch>` and
-  `git pull --ff-only` in the *primary* checkout. The local branch survives; no agent can remove it.
+  `git fetch origin main` — not `git pull` in the primary, which `guard-worktree` refuses an armed
+  session. The local branch survives; no agent can remove it.
 - **The embedded terminal is not isolated by this** — its container mounts the *host* checkout.
 
 ## Branch, commit & PR workflow
@@ -408,20 +449,17 @@ gh pr merge --squash --delete-branch
 
 No `--admin`: the active ruleset requires checks but **0 approvals**. Then, in order:
 **`ExitWorktree`** — an abandoned worktree leaves a stale copy of *this file* on disk, and stale prose
-**instructs** — then `git switch main && git pull` **in the primary**, then **`update_ticket` to
-`status: "done"`**.
+**instructs** — then `git fetch origin main`, then **`update_ticket` to `status: "done"`**.
 
-**The sync belongs after `ExitWorktree`, and only once you have confirmed you actually left.** Since
-step 1 the ticket branch is always cut inside a worktree, so the session is still in one here — and
-`ExitWorktree` returns nothing to the primary unless *this* session created the worktree with
-`EnterWorktree`; it is a no-op for a night-run tree or one entered by path. Check where you are
-before running the sync, rather than assuming the previous line moved you.
+**Fetch, not `git switch main && git pull` in the primary.** A session that called `start_ticket` is
+still armed after the merge, and `guard-worktree` refuses both in a primary checkout. The fetch
+updates shared refs from any checkout, and it is all the next branch needs, since step 1 branches
+from `origin/main`.
 
-**Do not lean on "the primary holds `main`, so the switch is refused."** That holds only *while* it
-does. Concurrent sessions routinely leave the primary on a ticket branch, and then `main` is free:
-the switch **succeeds** and quietly moves the worktree onto `main`, which is the worse failure
-because nothing reports it. Branching from `origin/main` is right either way — but for the reason in
-step 1, not because a refusal is guaranteed to catch you.
+**The primary's `main` is synced by the *next* session**, before its first `start_ticket` (**Session
+startup**): a `/clear` mints a new, unarmed session id. Until then the primary's copy of this file —
+the one a new session loads — is behind the merge, so **say so at the merge gate**; the human may
+prefer to pull it then.
 
 **From the embedded terminal the session has push + open-PR authority only.** Do not attempt
 `gh pr merge` there: print the URL and say merging is the human's decision.
@@ -433,7 +471,10 @@ carries the detail.
 
 **Temporary scripts:** never write one to mutate ticket state — `update_ticket` does that. For a
 genuine one-off needing the service layer, write it to the **project root**, run
-`node_modules/.bin/tsx <script>.ts`, delete it. Not `/tmp`, not the scratchpad.
+`node_modules/.bin/tsx <script>.ts`, delete it. Not `/tmp`, not the scratchpad. **Once a ticket is
+started, the root is your worktree's** — `guard-worktree` refuses the primary — and the board root
+falls back to the cwd, which is an empty board there: run it as
+`BOARD_DIR_OVERRIDE=<primary checkout> node_modules/.bin/tsx <script>.ts`.
 
 **TypeScript is lint-enforced** (`eslint.config.js`): no type casting (`as Foo`/`as any`), no non-null
 assertions (`foo!`), no `any`/`unknown` in your own types. `as const` stays allowed.

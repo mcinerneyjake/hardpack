@@ -701,6 +701,36 @@ describe('~/.claude/tools ticket-workflow pin (machine-local runtime, audited on
     expect(unresolvable, 'run-hook.mjs imports these by bare specifier and cannot load them').toEqual([]);
   });
 
+  // tkt-ad0806bc834f. guard-worktree-precheck.mjs is wired as a COPY beside run-hook.mjs, not through
+  // it, and `ticket-workflow doctor` exempts it from drift (its text names ticket-workflow/hooks/, so it
+  // classifies as a launcher). A tools bump without a re-copy would run a stale precheck unreported.
+  // Both halves, because either one missing disarms the guard silently: no arming entry writes no
+  // marker, so the precheck allows every call; a matcher missing a tool never judges that tool.
+  it.runIf(present)('wires guard-worktree\'s arming entry and a precheck covering every write tool', () => {
+    const pre = readJson(userSettings).hooks?.PreToolUse ?? [];
+    const wiring = (re) => pre.filter((m) => (m.hooks ?? []).some((h) => re.test(h.command ?? '')));
+    const arming = wiring(/run-hook\.mjs\s+guard-worktree\s+closed\b/);
+    expect(arming.map((m) => m.matcher), 'no closed guard-worktree arming entry').toContain('mcp__kanban__start_ticket');
+    const covered = new Set(wiring(/\/guard-worktree-precheck\.mjs\b/).flatMap((m) => (m.matcher ?? '').split('|')));
+    expect(['Edit', 'Write', 'NotebookEdit', 'Bash'].filter((t) => !covered.has(t)), 'tools the precheck matcher misses').toEqual([]);
+  });
+
+  it.runIf(present)('wires every copied hook byte-identical to the shipped one', () => {
+    const copied = [...new Set(
+      Object.values(readJson(userSettings).hooks ?? {})
+        .flat()
+        .flatMap((m) => (m.hooks ?? []).map((h) => h.command ?? ''))
+        .map((c) => /\.claude\/tools\/hooks\/([\w-]+\.mjs)\b/.exec(c)?.[1])
+        .filter((f) => f && f !== 'run-hook.mjs'),
+    )];
+    expect(copied, `wires no copied hook out of ${userSettings}`).toContain('guard-worktree-precheck.mjs');
+    const stale = copied.filter((f) => {
+      const shipped = join(TOOLS_DIR, 'node_modules', 'ticket-workflow', 'hooks', f);
+      return !existsSync(shipped) || !readFileSync(join(TOOLS_DIR, 'hooks', f)).equals(readFileSync(shipped));
+    });
+    expect(stale, 're-copy these from ~/.claude/tools/node_modules/ticket-workflow/hooks/').toEqual([]);
+  });
+
   // The control, bound to the REAL parser via fixture files — a hand-copied regex here would pass
   // every mutation to pinnedTag, which is the shape that let v0.16.0 sit against v0.18.0 unnoticed.
   it('extracts a pin from a real package.json, tells two versions apart, and refuses to guess', () => {
