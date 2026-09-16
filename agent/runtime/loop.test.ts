@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { setupTempTicketDirs } from '../../test-support/tempTicketDirs.js';
-import { runIntake, SYSTEM_PROMPT_CREATE_ONLY } from './loop.js';
+import { runIntake, IntakeRunError, SYSTEM_PROMPT_CREATE_ONLY } from './loop.js';
 import { type ChatClient, type ChatMessage, type ToolCall } from './llm.js';
 import { type ChatTool } from './tools.js';
 import { DocumentIndex, type Embedder } from '../retrieval/retrieval.js';
@@ -16,6 +16,13 @@ const buildIndex = (): Promise<DocumentIndex> =>
   DocumentIndex.build(new StubEmbedder(), [
     { id: 't1', source: 'ticket', title: 'Existing login bug', text: 'Existing login bug' },
   ]);
+
+// Return the rejection value for inspection. `rejects.toThrow` cannot reach the error's own fields,
+// and re-awaiting the call to get at them would run the whole (ticket-writing) intake twice.
+async function rejectionOf(p: Promise<unknown>): Promise<unknown> {
+  try { await p; } catch (err) { return err; }
+  throw new Error('expected the run to reject, but it resolved');
+}
 
 const assistant = (content: string | null, tool_calls?: ToolCall[]): ChatMessage => ({ role: 'assistant', content, tool_calls });
 const toolCall = (id: string, name: string, args: string): ToolCall => ({ id, type: 'function', function: { name, arguments: args } });
@@ -89,6 +96,52 @@ describe('runIntake', () => {
     }
     await expect(runIntake('x', { chat: new ThrowingChat(), index: await buildIndex() }))
       .rejects.toThrow(/truncated|length/i);
+  });
+
+  // tkt-3953c78cffe7 (red-first repro). A throw mid-run used to discard everything the run had
+  // already done: the runId it stamped onto real tickets, and the tallies of the writes that landed.
+  // The caller then had nothing to meter, so the spend reached no run log and those tickets pointed
+  // at a runId that was never recorded. Same reason the step-budget exhaustion returns an errored
+  // outcome rather than throwing — except this IS a fault, so it must still reject.
+  it('carries the partial run state out when the loop throws after a write', async () => {
+    class FailsAfterCreate implements ChatClient {
+      private turn = 0;
+      complete(): Promise<ChatMessage> {
+        this.turn++;
+        if (this.turn === 1) {
+          return Promise.resolve(assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Landed before the fault"}')]));
+        }
+        return Promise.reject(new Error('chat died mid-run'));
+      }
+    }
+    const err = await rejectionOf(runIntake('x', {
+      chat: new FailsAfterCreate(), index: await buildIndex(), runId: 'run-thrown',
+    }));
+    if (!(err instanceof IntakeRunError)) throw new Error(`expected IntakeRunError, got: ${String(err)}`);
+    expect(err.partial.runId).toBe('run-thrown');
+    expect(err.partial.createdIds).toHaveLength(1);
+    expect(err.partial.outcome).toMatchObject({ created: 1, updated: 0, errored: true });
+    // The ticket really is on the board carrying that runId — the stranded record this fixes.
+    const created = (await listTickets()).find((t) => t.id === err.partial.createdIds[0]);
+    expect(created?.runId).toBe('run-thrown');
+    // The original fault is preserved, not replaced: isRuntimeUnavailable walks `cause`, so a 503
+    // still classifies as one through the wrapper.
+    expect(err.cause).toBeInstanceOf(Error);
+    expect(err.message).toContain('chat died mid-run');
+  });
+
+  it('reports zero tallies on a run that throws before anything landed', async () => {
+    class FailsImmediately implements ChatClient {
+      complete(): Promise<ChatMessage> { return Promise.reject(new Error('down on the first call')); }
+    }
+    const err = await rejectionOf(runIntake('x', {
+      chat: new FailsImmediately(), index: await buildIndex(), runId: 'run-empty',
+    }));
+    if (!(err instanceof IntakeRunError)) throw new Error(`expected IntakeRunError, got: ${String(err)}`);
+    expect(err.partial).toMatchObject({
+      runId: 'run-empty', createdIds: [], updatedIds: [], cappedCreates: 0,
+    });
+    expect(err.partial.outcome).toMatchObject({ created: 0, updated: 0, declined: 0, errored: true });
   });
 
   it('links each tool result to its call via tool_call_id, after the assistant turn', async () => {

@@ -93,6 +93,32 @@ export interface IntakeResult {
   cappedCreates: number;
 }
 
+// What a run had already done when it threw. A fault does not un-spend the tokens, and it does not
+// un-write the tickets already on disk carrying `runId` in their frontmatter — this is the only route
+// either still has to the run log (tkt-3953c78cffe7).
+export interface IntakePartial {
+  runId: string;
+  outcome: RunOutcome;
+  createdIds: string[];
+  updatedIds: string[];
+  steps: number;
+  cappedCreates: number;
+}
+
+// Carries that partial state to the caller. REJECTS rather than resolving with an errored outcome: a
+// caller that ignores it must fail loudly, not report a crashed run as a completed one. `cause` holds
+// the original untouched, which is what keeps isRuntimeUnavailable's cause-walk — and so the
+// controller's 503 — working through the wrapper.
+export class IntakeRunError extends Error {
+  readonly partial: IntakePartial;
+  constructor(partial: IntakePartial, options: { cause: unknown }) {
+    const detail = options.cause instanceof Error ? options.cause.message : String(options.cause);
+    super(`Intake run ${partial.runId} failed at step ${partial.steps}: ${detail}`, options);
+    this.name = 'IntakeRunError';
+    this.partial = partial;
+  }
+}
+
 export interface IntakeDeps {
   chat: ChatClient;
   index: DocumentIndex;
@@ -171,49 +197,66 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   let declinedCount = 0;
   let cappedCreates = 0;
 
-  for (let step = 1; step <= maxSteps; step++) {
-    const assistant = await deps.chat.complete(messages, tools);
-    messages.push(assistant);
+  // Hoisted so the catch can report which step faulted.
+  let step = 0;
+  try {
+    for (step = 1; step <= maxSteps; step++) {
+      const assistant = await deps.chat.complete(messages, tools);
+      messages.push(assistant);
 
-    const calls = assistant.tool_calls ?? [];
-    if (calls.length === 0) {
-      const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
-      const outcome = buildOutcome(created, updated, declinedCount, false);
-      return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
-    }
-
-    for (const call of calls) {
-      const name = call.function.name;
-      const args = parseArgs(call.function.arguments);
-      const kind = mutationKind(name);
-      // Propose mode: capture the first create/update and halt — don't dispatch, don't feed a decline back. noProposal is false even though nothing is tallied.
-      // NOTE: `messages` deliberately ends with the captured tool_call UNANSWERED — a future consumer that replays it would need to backfill a synthetic tool response first (proposeIntake discards messages, so it's moot today).
-      if (deps.onCapture && kind) {
-        const final = deps.onCapture(name, args);
-        const outcome = buildOutcome(created, updated, declinedCount, false, false);
+      const calls = assistant.tool_calls ?? [];
+      if (calls.length === 0) {
+        const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
+        const outcome = buildOutcome(created, updated, declinedCount, false);
         return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
       }
-      // Over the create budget: short-circuit BEFORE runCall, so the write never reaches the service.
-      // Falls through to the shared tally/push — isError keeps it out of `created`, and it is not a
-      // human `declined` either, so the outcome records exactly the tickets that landed.
-      const overCap = createOnly && kind === 'create' && created >= maxCreates;
-      if (overCap) cappedCreates += 1;
-      const { result, declined: wasDeclined } = overCap
-        ? { result: creationCapped(maxCreates), declined: false }
-        : await runCall(name, args, deps, runId, allowedNames);
-      // Accepted ONLY when neither declined nor errored — a failed create/update (missing title → 400 → isError) produced no ticket, so crediting it would make economics.ts claim manual value for work never done.
-      if (kind && wasDeclined) declinedCount += 1;
-      else if (kind && !result.isError) {
-        const id = ticketIdOf(result);
-        if (kind === 'create') { created += 1; if (id) createdIds.push(id); }
-        else { updated += 1; if (id) updatedIds.push(id); }
+
+      for (const call of calls) {
+        const name = call.function.name;
+        const args = parseArgs(call.function.arguments);
+        const kind = mutationKind(name);
+        // Propose mode: capture the first create/update and halt — don't dispatch, don't feed a decline back. noProposal is false even though nothing is tallied.
+        // NOTE: `messages` deliberately ends with the captured tool_call UNANSWERED — a future consumer that replays it would need to backfill a synthetic tool response first (proposeIntake discards messages, so it's moot today).
+        if (deps.onCapture && kind) {
+          const final = deps.onCapture(name, args);
+          const outcome = buildOutcome(created, updated, declinedCount, false, false);
+          return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
+        }
+        // Over the create budget: short-circuit BEFORE runCall, so the write never reaches the service.
+        // Falls through to the shared tally/push — isError keeps it out of `created`, and it is not a
+        // human `declined` either, so the outcome records exactly the tickets that landed.
+        const overCap = createOnly && kind === 'create' && created >= maxCreates;
+        if (overCap) cappedCreates += 1;
+        const { result, declined: wasDeclined } = overCap
+          ? { result: creationCapped(maxCreates), declined: false }
+          : await runCall(name, args, deps, runId, allowedNames);
+        // Accepted ONLY when neither declined nor errored — a failed create/update (missing title → 400 → isError) produced no ticket, so crediting it would make economics.ts claim manual value for work never done.
+        if (kind && wasDeclined) declinedCount += 1;
+        else if (kind && !result.isError) {
+          const id = ticketIdOf(result);
+          if (kind === 'create') { created += 1; if (id) createdIds.push(id); }
+          else { updated += 1; if (id) updatedIds.push(id); }
+        }
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: result.content.map((c) => c.text).join('\n'),
+        });
       }
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: result.content.map((c) => c.text).join('\n'),
-      });
     }
+  } catch (err) {
+    // Preserve the tally across the throw for the same reason the step-budget exit below returns
+    // instead of throwing: a bare throw discards it. Here it also strands every ticket the run
+    // already wrote — those carry `runId`, so losing it points the economics join at a run that
+    // was never logged (tkt-3953c78cffe7).
+    throw new IntakeRunError({
+      runId,
+      outcome: buildOutcome(created, updated, declinedCount, true),
+      createdIds,
+      updatedIds,
+      steps: step,
+      cappedCreates,
+    }, { cause: err });
   }
 
   // Step budget exhausted. Return an errored outcome rather than throwing, so the tally of mutations that DID execute is preserved (a throw would discard it and never set RunOutcome.errored).

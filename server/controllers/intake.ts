@@ -1,11 +1,12 @@
 import type { Request, Response } from 'express';
 import { getTicketIndex, embedUsage } from '../../agent/retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from '../../agent/runtime/llm.js';
-import { proposeIntake } from '../../agent/runtime/propose.js';
+import { proposeIntake, type ProposeResult } from '../../agent/runtime/propose.js';
 import { isRuntimeUnavailable } from '../../agent/runtime/unavailable.js';
 import { RUN_PREFIX_TEXT } from '../../agent/runtime/loop.js';
 import { type RunRecord } from '../../agent/cost/runLog.js';
 import { meterRun } from '../../agent/cost/meterRun.js';
+import { meterThrownRun } from '../../agent/cost/meterThrownRun.js';
 import { mergeUsage, subtractUsage, type RunUsage } from '../../agent/cost/usage.js';
 import type { RunOutcome } from '../../agent/cost/economics.js';
 import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../validation.js';
@@ -100,14 +101,27 @@ export async function propose(_req: Request, res: Response, input: IntakePropose
     // The build itself is no longer a per-draft cost anyway now that it is cached.
     const embedBaseline = embedUsage();
     const chat = RuntimeChatClient.fromEnv();
-    const proposed = await proposeIntake(input.report, { chat, index });
+    // Usage is read the same way on both paths — a run that threw spent real tokens, and before
+    // tkt-3953c78cffe7 the throw skipped the meter below entirely, so that spend reached nothing.
+    const spend = (): RunUsage => mergeUsage(chat.getUsage(), subtractUsage(embedUsage(), embedBaseline));
+    let proposed: ProposeResult;
+    try {
+      proposed = await proposeIntake(input.report, { chat, index });
+    } catch (err) {
+      await meterThrownRun(err, {
+        model: resolveLlmConfig().model, usage: spend(), reviewMs: 0,
+        prefixText: RUN_PREFIX_TEXT, dynamicText: input.report,
+      });
+      // Rethrown untouched: requireRuntime still classifies it, and isRuntimeUnavailable walks
+      // `cause`, so an unreachable runtime is still a 503 through IntakeRunError's wrapper.
+      throw err;
+    }
     // Meter the spend NOW so never-applied proposes still reach the run log; an
     // applied proposal re-records at apply and the rollup dedupes last-wins. Best-effort:
     // if `pending` is lost before apply (restart / MAX_RUNS eviction), this record remains
     // as honest spend with 0 accepted. Durable reconciliation is a follow-up (tkt-2073125cac5c).
     // mergeUsage orders callTrace by startedAt, so chat and embed entries interleave in real order.
-    const usage = mergeUsage(chat.getUsage(), subtractUsage(embedUsage(), embedBaseline));
-    const pending = rememberRun(proposed.runId, usage, input.report);
+    const pending = rememberRun(proposed.runId, spend(), input.report);
     await meterIntakeRun(proposed.runId, pending, proposeOutcome(proposed.proposal !== null), NO_TICKETS, 0);
     return proposed;
   });

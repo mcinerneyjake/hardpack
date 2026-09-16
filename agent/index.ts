@@ -2,12 +2,13 @@ import * as readline from 'node:readline/promises';
 import { RuntimeEmbedder } from './retrieval/retrieval.js';
 import { buildCliIndex } from './retrieval/indexCache.js';
 import { RuntimeChatClient, resolveLlmConfig } from './runtime/llm.js';
-import { runIntake, RUN_PREFIX_TEXT, RUN_PREFIX_TEXT_CREATE_ONLY } from './runtime/loop.js';
+import { runIntake, RUN_PREFIX_TEXT, RUN_PREFIX_TEXT_CREATE_ONLY, type IntakeResult } from './runtime/loop.js';
 import { getTicket } from '../server/tickets.js';
 import { askApproval } from './runtime/approval.js';
 import { mergeUsage } from './cost/usage.js';
 import { renderSummary } from './cost/summary.js';
 import { meterRun } from './cost/meterRun.js';
+import { meterThrownRun } from './cost/meterThrownRun.js';
 
 // CLI entry for the local agentic-intake agent, with a stdin approval gate on every mutating action. Requires running embedding + chat models (e.g. LM Studio).
 //   npm run agent -- "the dashboard crashes when I export to CSV"
@@ -80,7 +81,27 @@ async function main(): Promise<void> {
     console.log('Building the board index…');
     const index = await buildCliIndex(embedder);
     console.log(`Indexed ${index.size} tickets. Running intake${autoApprove ? ' (auto-approve)' : ''}${createOnly ? ' (create-only)' : ''}…`);
-    const result = await runIntake(input, { chat, index, approve, createOnly });
+    const prefixText = createOnly ? RUN_PREFIX_TEXT_CREATE_ONLY : RUN_PREFIX_TEXT;
+    let result: IntakeResult;
+    try {
+      result = await runIntake(input, { chat, index, approve, createOnly });
+    } catch (err) {
+      // --yes auto-approves, so writes land INSIDE the loop: a throw part way through leaves those
+      // tickets on disk stamped with this run's id. Metering here is what keeps their economics link
+      // resolvable instead of 404 "Run not found" (tkt-3953c78cffe7). Rethrown — main()'s handler
+      // still reports the fault and exits non-zero.
+      const partial = await meterThrownRun(err, {
+        model, usage: mergeUsage(chat.getUsage(), embedder.getUsage()), reviewMs, prefixText,
+        dynamicText: input,
+      });
+      // Name what landed BEFORE rethrowing. main()'s handler prints the fault only, and the
+      // Claude-delegated create-only flow is required to report the ids back — without this the
+      // caller sees a bare failure, re-files the same report, and duplicates the ticket that landed.
+      if (partial && (partial.createdIds.length > 0 || partial.updatedIds.length > 0)) {
+        console.error(`\n! the run wrote to the board before it failed — created ${JSON.stringify(partial.createdIds)}, updated ${JSON.stringify(partial.updatedIds)} (runId ${partial.runId})`);
+      }
+      throw err;
+    }
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
     // Deterministic, not read off the model's summary — a weak local model narrates the tickets it
     // made and omits the ones it was blocked from making (tkt-dd22f37d1c60).
@@ -97,7 +118,7 @@ async function main(): Promise<void> {
       outcome: result.outcome,
       reviewMs,
       ticketIds: { created: result.createdIds, updated: result.updatedIds },
-      prefixText: createOnly ? RUN_PREFIX_TEXT_CREATE_ONLY : RUN_PREFIX_TEXT,
+      prefixText,
       dynamicText: input,
     });
     console.log(`\n${renderSummary(summary)}`);
