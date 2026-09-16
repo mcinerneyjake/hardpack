@@ -33,6 +33,7 @@ export async function meterThrownRun(err: unknown, input: ThrownRunInput): Promi
       runId: err.partial.runId,
       outcome: err.partial.outcome,
       ticketIds: { created: err.partial.createdIds, updated: err.partial.updatedIds },
+      cappedCreates: err.partial.cappedCreates,
       model: input.model,
       usage: input.usage,
       reviewMs: input.reviewMs,

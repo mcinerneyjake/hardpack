@@ -123,6 +123,7 @@ async function main(): Promise<void> {
       outcome: result.outcome,
       reviewMs,
       ticketIds: { created: result.createdIds, updated: result.updatedIds },
+      cappedCreates: result.cappedCreates,
       prefixText,
       dynamicText: input,
     });

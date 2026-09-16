@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { appendRun, readRun, readRuns, getRunForTicket, isRunRecord, runsDir as defaultRunsDir, type RunRecord } from './runLog.js';
+import { appendRun, readRun, readRuns, getRunForTicket, isRunRecord, runsDir as defaultRunsDir, type RunRecord, type NewRunRecord } from './runLog.js';
 import { emptyUsage } from './usage.js';
 import { createTicket } from '../../server/tickets.js';
 
@@ -21,7 +21,7 @@ afterEach(async () => {
   await fs.rm(ticketsDir, { recursive: true, force: true });
 });
 
-function mkRecord(runId: string, over: Partial<RunRecord> = {}): RunRecord {
+function mkRecord(runId: string, over: Partial<RunRecord> = {}): NewRunRecord {
   return {
     runId,
     at: '2026-07-03T00:00:00.000Z',
@@ -31,6 +31,7 @@ function mkRecord(runId: string, over: Partial<RunRecord> = {}): RunRecord {
     reviewMs: 0,
     cost: { measured: [], assumed: [], externalities: [], headline: [] },
     ticketIds: { created: [], updated: [] },
+    cappedCreates: 0,
     ...over,
   };
 }

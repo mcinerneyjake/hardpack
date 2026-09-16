@@ -11,7 +11,7 @@ import * as tickets from './tickets.js';
 import { closeAllStreamClients } from './stream.js';
 import { resetIndexCache } from '../agent/retrieval/indexCache.js';
 import { resolveEmbedConfig } from '../agent/retrieval/models.js';
-import { appendRun, readRun, readRuns, type RunRecord } from '../agent/cost/runLog.js';
+import { appendRun, readRun, readRuns, type NewRunRecord } from '../agent/cost/runLog.js';
 import { emptyUsage } from '../agent/cost/usage.js';
 import * as econ from '../agent/cost/economicsSummary.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
@@ -881,6 +881,7 @@ describe('POST /api/intake/propose', () => {
     expect(run?.usage.totalTokens).toBeGreaterThan(0); // the spend is recorded
     expect(run?.outcome).toMatchObject({ created: 0, updated: 0, noProposal: false }); // proposed, not yet applied
     expect(run?.ticketIds).toEqual({ created: [], updated: [] });
+    expect(run?.cappedCreates).toBe(0);
   });
 
   // tkt-9f09b3a1e95c round-trip (indexCache → controller → meterRun → runLog): the run record
@@ -1497,7 +1498,7 @@ describe('GET /api/economics', () => {
     await fs.rm(path.join(runsDir, 'runs.jsonl'), { force: true });
   });
 
-  const rec = (runId: string, at: string): RunRecord => ({
+  const rec = (runId: string, at: string): NewRunRecord => ({
     runId, at, model: 'test', usage: emptyUsage(),
     outcome: { created: 1, updated: 0, declined: 0, noProposal: false, errored: false },
     reviewMs: 0,
@@ -1506,6 +1507,7 @@ describe('GET /api/economics', () => {
       assumed: [{ label: 'total run cost', amount: 0.02, unit: 'USD', kind: 'assumed' }],
     },
     ticketIds: { created: ['tkt-x'], updated: [] },
+    cappedCreates: 0,
   });
 
   it('returns an aggregate summary over the run log', async () => {
