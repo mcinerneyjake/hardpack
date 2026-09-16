@@ -62,6 +62,29 @@ describe('per-call trace round-trip (meter → persist → read back)', () => {
     expect(trace).toHaveLength(run.usage.calls);
   });
 
+  // tkt-354d1bdcffa9 — the same seam for the refused-write count. A rejection is only observable if
+  // it survives meter → JSONL → read back; the whole point of the field is the far side.
+  it('preserves a refused-write count and its noProposal:false across the round-trip', async () => {
+    const outcome = { created: 0, updated: 0, declined: 0, rejected: 2, noProposal: false, errored: false };
+    await meterRun(input({ runId: 'run-rejected', outcome }));
+    const run = await runLog.readRun('run-rejected');
+    if (!run) throw new Error('run was not persisted');
+    // Source input == persisted output — the field is not dropped or defaulted in transit.
+    expect(run.outcome).toEqual(outcome);
+    // The distinction the ticket exists for, asserted where a dashboard would read it.
+    expect(run.outcome.rejected).toBe(2);
+    expect(run.outcome.noProposal).toBe(false);
+  });
+
+  // A run genuinely proposing nothing must stay distinguishable from one whose writes were refused.
+  it('reads back a no-proposal run as noProposal:true with no rejections', async () => {
+    const outcome = { created: 0, updated: 0, declined: 0, rejected: 0, noProposal: true, errored: false };
+    await meterRun(input({ runId: 'run-quiet', outcome }));
+    const run = await runLog.readRun('run-quiet');
+    expect(run?.outcome.rejected).toBe(0);
+    expect(run?.outcome.noProposal).toBe(true);
+  });
+
   // The 128 dev runs already on disk predate this field; they must stay readable.
   it('still reads back a pre-trace record, leaving its trace undefined (not [])', async () => {
     const legacy = { ...emptyUsage(), activeMs: 128_000, calls: 12 };

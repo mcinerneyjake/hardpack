@@ -119,11 +119,12 @@ export function mutationKind(name: string): 'create' | 'update' | null {
   return null;
 }
 
-// `noProposal` is derived (nothing created/updated/declined) unless forced — the propose-mode halt captures a proposal without tallying it, so it passes noProposal: false explicitly.
+// `noProposal` is derived (nothing created/updated/declined/rejected) unless forced — the propose-mode halt captures a proposal without tallying it, so it passes noProposal: false explicitly.
+// `rejected` counts in that derivation on purpose: the model DID propose and the service refused it, so reporting noProposal would assert the opposite of what happened (tkt-354d1bdcffa9).
 function buildOutcome(
-  created: number, updated: number, declined: number, errored: boolean, noProposal?: boolean,
+  created: number, updated: number, declined: number, errored: boolean, rejected: number, noProposal?: boolean,
 ): RunOutcome {
-  return { created, updated, declined, errored, noProposal: noProposal ?? created + updated + declined === 0 };
+  return { created, updated, declined, errored, rejected, noProposal: noProposal ?? created + updated + declined + rejected === 0 };
 }
 
 // Run one tool call, gating non-read-only tools behind the callback. Reports whether it was declined so the loop tallies the outcome. `runId` stamps agent provenance onto create/update writes.
@@ -170,6 +171,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   let updated = 0;
   let declinedCount = 0;
   let cappedCreates = 0;
+  let rejectedCount = 0;
 
   for (let step = 1; step <= maxSteps; step++) {
     const assistant = await deps.chat.complete(messages, tools);
@@ -178,7 +180,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
     const calls = assistant.tool_calls ?? [];
     if (calls.length === 0) {
       const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
-      const outcome = buildOutcome(created, updated, declinedCount, false);
+      const outcome = buildOutcome(created, updated, declinedCount, false, rejectedCount);
       return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
     }
 
@@ -190,7 +192,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
       // NOTE: `messages` deliberately ends with the captured tool_call UNANSWERED — a future consumer that replays it would need to backfill a synthetic tool response first (proposeIntake discards messages, so it's moot today).
       if (deps.onCapture && kind) {
         const final = deps.onCapture(name, args);
-        const outcome = buildOutcome(created, updated, declinedCount, false, false);
+        const outcome = buildOutcome(created, updated, declinedCount, false, rejectedCount, false);
         return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
       }
       // Over the create budget: short-circuit BEFORE runCall, so the write never reaches the service.
@@ -208,6 +210,13 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
         if (kind === 'create') { created += 1; if (id) createdIds.push(id); }
         else { updated += 1; if (id) updatedIds.push(id); }
       }
+      // Refused by the SERVICE — the only case the operator can act on by re-filing the report.
+      // Both exclusions are calls that DID reach this branch with isError set (creationCapped and the
+      // whitelist refusal are ordinary isError results, not short-circuits) but never reached the
+      // service: the run cap is owned by cappedCreates, and a tool absent from `allowedNames` is
+      // refused inside dispatchTool. Counting either would advise re-running a report against a limit
+      // or a toolset that will refuse it again identically.
+      else if (kind && !overCap && allowedNames.has(name)) rejectedCount += 1;
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -217,7 +226,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   }
 
   // Step budget exhausted. Return an errored outcome rather than throwing, so the tally of mutations that DID execute is preserved (a throw would discard it and never set RunOutcome.errored).
-  const outcome = buildOutcome(created, updated, declinedCount, true);
+  const outcome = buildOutcome(created, updated, declinedCount, true, rejectedCount);
   const final = `The agent did not finish within ${maxSteps} steps; stopping. ` +
     `${created + updated} mutation(s) were applied before the step budget ran out.`;
   return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds, cappedCreates };

@@ -145,6 +145,9 @@ describe('runIntake', () => {
     expect(toolMsg?.content).toContain('not available');
     expect((await getTicket(existing.id)).body).toBe('ORIGINAL — must survive');
     expect(result.updatedIds).toHaveLength(0);
+    // The whitelist blocked it here, so the service never saw it — counting it as a service
+    // refusal would tell the operator to "re-run the report" about a tool this mode never offers.
+    expect(result.outcome.rejected).toBe(0);
   });
 
   // --- create cap (tkt-dd22f37d1c60): a runaway guard maxSteps cannot provide ---
@@ -213,6 +216,10 @@ describe('runIntake', () => {
     expect(result.cappedCreates).toBe(2);
     // The outcome alone cannot carry it: a capped run looks identical to a clean one.
     expect(result.outcome).toMatchObject({ created: 1, declined: 0, errored: false });
+    // A budget stop is NOT a service refusal, even though creationCapped sets isError and so reaches
+    // the same tally branch. cappedCreates above is the signal; double-reporting it here would tell
+    // the operator to re-file a report the cap will block identically.
+    expect(result.outcome.rejected).toBe(0);
   });
 
   it('leaves cappedCreates at 0 when nothing was blocked', async () => {
@@ -347,6 +354,16 @@ describe('runIntake', () => {
     expect(result.final).toMatch(/within 3 steps/);
   });
 
+  // errored and rejected are independent: exhausting the budget must not discard the refusals
+  // already tallied, which is the same reason the budget path returns rather than throws.
+  it('preserves the refused-write count when the step budget is exhausted', async () => {
+    const chat: ChatClient = {
+      complete: () => Promise.resolve(assistant(null, [toolCall('c', 'create_ticket', '{"priority":"P1"}')])),
+    };
+    const result = await runIntake('x', { chat, index: await buildIndex(), maxSteps: 3, approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 0, errored: true, rejected: 3, noProposal: false });
+  });
+
   // --- human-in-the-loop approval gate (Phase 4) ---
 
   it('gates a mutating tool — rejection prevents the write', async () => {
@@ -460,16 +477,39 @@ describe('runIntake', () => {
       assistant('nothing landed'),
     ]);
     const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
-    expect(result.outcome).toMatchObject({ created: 0, updated: 0, declined: 0, noProposal: true });
+    // Refused writes are tallied as `rejected`, never as accepted — and the run is NOT noProposal:
+    // the model proposed twice and the service refused both (tkt-354d1bdcffa9).
+    expect(result.outcome).toMatchObject({ created: 0, updated: 0, declined: 0, rejected: 2, noProposal: false });
   });
 
-  it('reports outcome: declined when a mutation is rejected', async () => {
+  it('distinguishes a refused proposal from no proposal at all', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"x","priority":"P1"}')]), // bad enum → 400
+      assistant('could not create'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 0, declined: 0, rejected: 1, noProposal: false });
+  });
+
+  it('leaves rejected at 0 when every write lands', async () => {
+    const chat = new ScriptedChat([
+      assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Fine"}')]),
+      assistant('made it'),
+    ]);
+    const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => true });
+    expect(result.outcome).toMatchObject({ created: 1, rejected: 0, noProposal: false });
+  });
+
+  // Named for the HUMAN gate, not the `rejected` field: a decline and a service refusal are
+  // different numbers and must stay separable, or "the model proposed something invalid" and
+  // "I said no" collapse into one.
+  it('reports outcome: declined when the human gate turns a mutation down (not rejected)', async () => {
     const chat = new ScriptedChat([
       assistant(null, [toolCall('c1', 'create_ticket', '{"title":"Nope"}')]),
       assistant('skipped'),
     ]);
     const result = await runIntake('x', { chat, index: await buildIndex(), approve: () => false });
-    expect(result.outcome).toMatchObject({ created: 0, declined: 1, noProposal: false });
+    expect(result.outcome).toMatchObject({ created: 0, declined: 1, rejected: 0, noProposal: false });
   });
 
   it('reports outcome: noProposal when the model answers with no mutation', async () => {
