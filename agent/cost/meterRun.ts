@@ -11,6 +11,7 @@ export interface MeterRunInput {
   outcome: RunOutcome;
   reviewMs: number;
   ticketIds: RunRecord['ticketIds'];
+  cappedCreates: number;
   // Cacheable prefix (system prompt + tool schema), priced separately from the dynamic tail (RUN_PREFIX_TEXT).
   prefixText: string;
   // Per-run variable input (the CLI's raw prompt, or the intake report).
@@ -49,6 +50,7 @@ export async function meterRun(input: MeterRunInput): Promise<RunSummary> {
       reviewMs: input.reviewMs,
       cost,
       ticketIds: input.ticketIds,
+      cappedCreates: input.cappedCreates,
     });
   } catch (err) {
     console.warn(`[runlog] failed to persist run ${input.runId}: ${errMsg(err)}`);

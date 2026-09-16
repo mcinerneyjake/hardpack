@@ -76,6 +76,7 @@ async function main(): Promise<void> {
       runId: result.runId, at, model, usage,
       outcome: result.outcome, reviewMs: 0, cost: summary,
       ticketIds: { created: result.createdIds, updated: result.updatedIds },
+      cappedCreates: result.cappedCreates,
     });
   } catch (err) {
     console.warn(`[runlog] failed to persist run ${result.runId}: ${err instanceof Error ? err.message : String(err)}`);

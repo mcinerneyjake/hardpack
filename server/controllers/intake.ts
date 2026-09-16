@@ -68,7 +68,8 @@ const NO_TICKETS: RunRecord['ticketIds'] = { created: [], updated: [] };
 async function meterIntakeRun(runId: string, pending: PendingRun, outcome: RunOutcome, ticketIds: RunRecord['ticketIds'], reviewMs: number): Promise<void> {
   await meterRun({
     runId, model: pending.model, usage: pending.usage, outcome, reviewMs,
-    ticketIds, prefixText: RUN_PREFIX_TEXT, dynamicText: pending.report,
+    // 0 by construction: the cap only fires under createOnly, and propose halts at the first captured write.
+    ticketIds, cappedCreates: 0, prefixText: RUN_PREFIX_TEXT, dynamicText: pending.report,
   });
 }
 

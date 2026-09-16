@@ -29,6 +29,7 @@ function input(over: Partial<MeterRunInput> = {}): MeterRunInput {
     outcome: { created: 1, updated: 0, declined: 0, noProposal: false, errored: false },
     reviewMs: 250,
     ticketIds: { created: ['tkt-1'], updated: [] },
+    cappedCreates: 0,
     prefixText: 'system prompt + tools',
     dynamicText: 'the run input',
     ...over,
@@ -76,6 +77,18 @@ describe('per-call trace round-trip (meter → persist → read back)', () => {
     expect(run.outcome.noProposal).toBe(false);
   });
 
+  // tkt-0d76600b9966 — the cap's count must survive to runs.jsonl, where a clean run and a run that
+  // silently dropped work otherwise read identically: the outcome of both is `created: N`.
+  it('preserves the capped-create count across the round-trip, distinct from a clean run', async () => {
+    await meterRun(input({ runId: 'run-capped', cappedCreates: 2 }));
+    await meterRun(input({ runId: 'run-clean', cappedCreates: 0 }));
+    const capped = await runLog.readRun('run-capped');
+    const clean = await runLog.readRun('run-clean');
+    expect(capped?.cappedCreates).toBe(2);
+    expect(clean?.cappedCreates).toBe(0);
+    expect(capped?.outcome).toEqual(clean?.outcome);
+  });
+
   // A run genuinely proposing nothing must stay distinguishable from one whose writes were refused.
   it('reads back a no-proposal run as noProposal:true with no rejections', async () => {
     const outcome = { created: 0, updated: 0, declined: 0, rejected: 0, noProposal: true, errored: false };
@@ -104,6 +117,30 @@ describe('per-call trace round-trip (meter → persist → read back)', () => {
       reviewMs: 0, cost: { measured: [], assumed: [], externalities: [], headline: [] },
       ticketIds: { created: [], updated: [] },
     })).toBe(false);
+  });
+
+  // cappedCreates is OPTIONAL on read: every line written before tkt-0d76600b9966 lacks the key.
+  describe('persisted cappedCreates', () => {
+    const record = (extra: Record<string, unknown>): Record<string, unknown> => ({
+      runId: 'r', at: 'now', model: 'm', usage: emptyUsage(),
+      outcome: { created: 0, updated: 0, declined: 0, noProposal: true, errored: false },
+      reviewMs: 0, cost: { measured: [], assumed: [], externalities: [], headline: [] },
+      ticketIds: { created: [], updated: [] },
+      ...extra,
+    });
+
+    it('accepts a legacy record with no cappedCreates key, and a whole non-negative count', () => {
+      expect(runLog.isRunRecord(record({}))).toBe(true);
+      expect(runLog.isRunRecord(record({ cappedCreates: 0 }))).toBe(true);
+      expect(runLog.isRunRecord(record({ cappedCreates: 3 }))).toBe(true);
+    });
+
+    // index.ts gates its warning on `> 0`, so a -1 or 0.5 read back would suppress the signal silently.
+    it('rejects a present cappedCreates that is not a whole non-negative count', () => {
+      for (const bad of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, '2', null]) {
+        expect(runLog.isRunRecord(record({ cappedCreates: bad }))).toBe(false);
+      }
+    });
   });
 });
 

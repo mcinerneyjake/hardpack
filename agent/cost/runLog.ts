@@ -27,6 +27,14 @@ export interface RunRecord {
   reviewMs: number;
   cost: RunSummary;
   ticketIds: { created: string[]; updated: string[] };
+  // create_ticket calls the per-run cap blocked (tkt-0d76600b9966). Optional only because lines written
+  // before it lack the key; appendRun requires it, so every writer records one.
+  cappedCreates?: number;
+}
+export type NewRunRecord = RunRecord & { cappedCreates: number };
+
+function isCount(v: unknown): boolean {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0;
 }
 
 function isStringArray(v: unknown): v is string[] {
@@ -48,11 +56,12 @@ export function isRunRecord(v: unknown): v is RunRecord {
     && 'outcome' in v && isRunOutcome(v.outcome)
     && 'reviewMs' in v && typeof v.reviewMs === 'number'
     && 'cost' in v && isRunSummary(v.cost)
-    && 'ticketIds' in v && isTicketIds(v.ticketIds);
+    && 'ticketIds' in v && isTicketIds(v.ticketIds)
+    && (!('cappedCreates' in v) || isCount(v.cappedCreates));
 }
 
 // flag 'a' = O_APPEND: concurrent writers stay line-atomic.
-export async function appendRun(record: RunRecord): Promise<void> {
+export async function appendRun(record: NewRunRecord): Promise<void> {
   await fs.mkdir(runsDir(), { recursive: true });
   await fs.appendFile(runsPath(), `${JSON.stringify(record)}\n`, { encoding: 'utf8', flag: 'a' });
 }

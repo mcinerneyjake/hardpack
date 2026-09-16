@@ -105,6 +105,34 @@ describe('meterThrownRun (round-trip: a throw still reaches the run log)', () =>
     expect(run?.ticketIds).toEqual({ created: [], updated: [] });
   });
 
+  // tkt-0d76600b9966 — a capped create is dropped work, and a run that dies afterwards must still say so.
+  it('persists the capped-create count of a run that died after the cap fired', async () => {
+    class CapsThenDies implements ChatClient {
+      private turn = 0;
+      complete(): Promise<ChatMessage> {
+        this.turn++;
+        if (this.turn === 1) {
+          return Promise.resolve(assistant(null, [
+            toolCall('c1', 'create_ticket', '{"title":"Landed"}'),
+            toolCall('c2', 'create_ticket', '{"title":"Capped"}'),
+          ]));
+        }
+        return Promise.reject(new Error('runtime dropped mid-run'));
+      }
+    }
+    let thrown: unknown;
+    try {
+      await runIntake('a report', { chat: new CapsThenDies(), index: await buildIndex(), runId: 'run-capped-died', createOnly: true, maxCreates: 1 });
+    } catch (err) { thrown = err; }
+    if (!(thrown instanceof IntakeRunError)) throw new Error(`expected IntakeRunError, got: ${String(thrown)}`);
+    expect(thrown.partial.cappedCreates).toBe(1);
+
+    await meterThrownRun(thrown, meterInput);
+    const run = await readRun('run-capped-died');
+    expect(run?.cappedCreates).toBe(1);
+    expect(run?.outcome).toMatchObject({ created: 1, errored: true });
+  });
+
   // Rejection cases — an error raised before the loop minted a runId names no run, so there is
   // nothing to meter. Writing a record anyway would invent a run that never started.
   it('writes nothing and returns null for an error that is not an IntakeRunError', async () => {
