@@ -778,6 +778,19 @@ body {
 .draft-input:focus { border-color: var(--primary); outline: none; }
 .draft-actions { display: flex; align-items: center; gap: 8px; }
 .draft-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; }
+/* In the FORM this notice has no panel around it, and it is the only signal that a select shows a
+   fallback rather than the agent's proposal — so it carries its own weight there (tkt-a22ba10cd328).
+   Amber, not --danger: a dropped enum is a legibility problem, not data loss. */
+.draft-notice--dropped {
+  align-items: flex-start;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--prio-medium);
+  border-radius: 4px;
+  background: var(--badge-bg);
+  color: var(--muted);
+}
+.draft-notice--dropped strong, .draft-notice--dropped code { color: var(--text); }
 .draft-error { margin: 0; font-size: 13px; color: var(--danger); }
 .draft-checking { display: flex; align-items: center; gap: 8px; padding: 8px 0; font-size: 13px; color: var(--muted); }
 

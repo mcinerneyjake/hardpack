@@ -108,6 +108,34 @@ describe('intake propose→apply round-trip', () => {
     expect(persisted.assignee).toBe('Alice');
   });
 
+  // tkt-a22ba10cd328: an invalid enum is dropped silently, so the form's default is
+  // indistinguishable from a value the agent never proposed. The drop must survive the seam as a
+  // REPORT while the dropped value itself stays out of the form (the behaviour is unchanged).
+  it('an invalid proposed enum is reported as dropped while the form keeps the default', async () => {
+    const args = { title: 'Export 500s', type: 'banana', priority: 'critical', status: 'todo' };
+    const chat = new ScriptedChat([toolCallReply('create_ticket', args), finalReply]);
+    const { proposal } = await proposeIntake('export 500s', { chat, index: await newIndex() });
+    if (!proposal) throw new Error('expected a proposal');
+
+    const plan = resolveProposalPlan(proposal, []);
+    expect(plan.droppedEnums).toEqual([
+      { field: 'type', value: 'banana' },
+      { field: 'priority', value: 'critical' },
+    ]);
+
+    // The valid enum still lands, and the two invalid ones fall back to buildTicketForm's defaults.
+    const form = buildTicketForm(null, [], plan.prefill);
+    expect(form.status).toBe('todo');
+    expect(form.type).toBe('task');
+    expect(form.priority).toBe('medium');
+
+    // Fidelity: what persists is the default, not the proposed string — this is a legibility fix.
+    const created = await createTicket({ ...form });
+    const persisted = await getTicket(created.id);
+    expect(persisted.type).toBe('task');
+    expect(persisted.priority).toBe('medium');
+  });
+
   // A+B (tkt-67de93c44726 / tkt-7aa8c73735a9): the intake-apply write path stamps source:'assisted' + runId.
   it('A/B: an assisted write stamps source:assisted + runId', async () => {
     const t = await createTicket({ title: 'Drafted' }, { source: 'assisted', runId: 'run-ab' });
