@@ -791,7 +791,11 @@ file, which is usually something §6 told you to copy in rather than work at all
 retry, and do not confuse it for the dirty-tree stop.
 
 **In the two release-nothing cases the session is still in the worktree**, so anything below that
-assumes otherwise — a sync in the primary above all — has to be run there instead, or not at all.
+assumes otherwise has to be run there instead, or not at all. The post-merge sync is not among
+them: it is `git fetch origin main`, which works from any checkout, and syncing the primary's
+`main` is the *next* session's first step, since `guard-worktree` refuses it to an armed one. Under
+`--continuous` there is no next session, so the primary stays behind for the whole loop — say so at
+each merge gate.
 
 | ticket type | wrap-up check | handoff |
 |---|---|---|

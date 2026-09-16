@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -329,6 +330,96 @@ describe('pinned ticket-workflow build: raw NUL bytes are refused', () => {
   it('accepts the two-character \\0 escape', async () => {
     const t = await createTicket({ title: 'A', body: 'header is `SQLite format 3\\0`' });
     expect((await getTicket(t.id)).body).toContain('\\0');
+  });
+});
+
+// tkt-ad0806bc834f. A bump inverting the linked-worktree allow would wedge every armed ticket session
+// with this gate green. Asserts THIS repo's install; settings.audit.test.mjs binds the wired
+// ~/.claude/tools one to it. Spawned, not imported, because the module calls process.exit.
+describe('pinned ticket-workflow build: guard-worktree verdicts', () => {
+  const guard = createRequire(import.meta.url).resolve('ticket-workflow/hooks/guard-worktree.mjs');
+  // Inside the repo, never os.tmpdir(); realpath because the guard realpaths the paths it judges.
+  const fixtures = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), '.tmp-test');
+  const SESSION = 'pkg-contract-session';
+  let root = '';
+  let primary = '';
+  let linked = '';
+  let stateDir = '';
+
+  // A pre-commit hook exports GIT_DIR/GIT_INDEX_FILE, which would retarget every fixture git call
+  // at the repo being committed rather than the fixture.
+  const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+  const git = (args: string[], cwd: string) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, env: cleanEnv(), stdio: 'pipe' });
+
+  const hook = (payload: Record<string, unknown>) =>
+    spawnSync(process.execPath, [guard], {
+      input: JSON.stringify({ session_id: SESSION, ...payload }),
+      env: { ...cleanEnv(), WORKTREE_GUARD_STATE_DIR: stateDir },
+      encoding: 'utf8',
+    });
+  const edit = (file: string, cwd: string) =>
+    hook({ tool_name: 'Edit', cwd, tool_input: { file_path: file, old_string: 'a', new_string: 'b' } });
+
+  beforeAll(() => {
+    mkdirSync(fixtures, { recursive: true });
+    root = realpathSync(mkdtempSync(path.join(fixtures, 'guard-worktree-')));
+    primary = path.join(root, 'primary');
+    linked = path.join(root, 'linked');
+    stateDir = path.join(root, 'state');
+    mkdirSync(primary, { recursive: true });
+    git(['init', '-q'], primary);
+    writeFileSync(path.join(primary, 'file.txt'), 'x\n');
+    git(['add', 'file.txt'], primary);
+    git(['commit', '-q', '-m', 'init'], primary);
+    git(['worktree', 'add', '-q', '--detach', linked], primary);
+
+    const armed = hook({ tool_name: 'mcp__kanban__start_ticket', cwd: primary, tool_input: { id: 'tkt-000000000000' } });
+    expect(armed.status, armed.stderr).toBe(0);
+    expect(existsSync(path.join(stateDir, SESSION)), 'start_ticket wrote no marker').toBe(true);
+  });
+
+  afterAll(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('blocks an armed Edit into the primary checkout', () => {
+    const r = edit(path.join(primary, 'file.txt'), primary);
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.stderr).toMatch(/PRIMARY checkout/);
+  });
+
+  it('allows an armed Edit into a linked worktree', () => {
+    const r = edit(path.join(linked, 'file.txt'), linked);
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it('blocks an armed git stash pop, even from a linked worktree', () => {
+    const r = hook({ tool_name: 'Bash', cwd: linked, tool_input: { command: 'git stash pop' } });
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.stderr).toMatch(/refs\/stash/);
+  });
+
+  // CLAUDE.md's post-merge steps are only runnable by an armed session while these stay allowed.
+  it.each([
+    ['git fetch origin main', 'primary'],
+    ['git push origin --delete task/x', 'primary'],
+    ['git switch -c task/x --no-track origin/main', 'linked'],
+  ])('allows an armed `%s` in the %s checkout', (command, where) => {
+    const cwd = where === 'primary' ? primary : linked;
+    const r = hook({ tool_name: 'Bash', cwd, tool_input: { command } });
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it.each(['git pull --ff-only', 'git switch main'])('blocks an armed `%s` in the primary', (command) => {
+    const r = hook({ tool_name: 'Bash', cwd: primary, tool_input: { command } });
+    expect(r.status, r.stderr).toBe(2);
+  });
+
+  // Negative control: without it every block above could be an unconditional refusal.
+  it('allows the same primary Edit for a session that never started a ticket', () => {
+    const r = hook({ session_id: 'pkg-contract-unarmed', tool_name: 'Edit', cwd: primary, tool_input: { file_path: path.join(primary, 'file.txt') } });
+    expect(r.status, r.stderr).toBe(0);
   });
 });
 
