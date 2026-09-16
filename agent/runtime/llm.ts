@@ -199,11 +199,31 @@ export class RuntimeChatClient implements ChatClient {
       inputChars: messageChars(messages),
       tokens: chatUsageOf(json),
     });
+    // Before the truncation check: if the wrong model answered, "raise your token limit" is the wrong fix.
+    this.assertServedModel(json);
     if (truncatedByLength(json)) {
       throw new Error('Chat response was truncated (finish_reason: "length") — the model hit its token limit and the reply is incomplete. Refusing to treat a truncated response as a final answer; raise the token limit or shorten the input.');
     }
     const msg = json.choices[0].message;
     return { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls };
+  }
+
+  // Preflight lists downloaded ids; only the reply says which model RAN — an unserved id comes back 200
+  // naming a different one (measured, tkt-fdb39a679982). Absent, blank, or differing only in case and
+  // padding is no evidence of substitution, and a false positive here denies service on every agent path.
+  // A tag/quantization suffix is NOT normalized away: that names a different build, which is exactly
+  // the provenance difference this exists to catch.
+  private assertServedModel(json: unknown): void {
+    if (typeof json !== 'object' || json === null || !('model' in json)) return;
+    const served = json.model;
+    if (typeof served !== 'string') return;
+    const norm = served.trim().toLowerCase();
+    if (norm === '' || norm === this.cfg.model.trim().toLowerCase()) return;
+    throw new Error(
+      `Chat ran on "${served}" but "${this.cfg.model}" was requested (${this.cfg.baseUrl}). `
+      + 'The runtime substituted a different model, so this reply is not attributable to the requested '
+      + 'model — refusing it. Set LLM_MODEL to a model the runtime serves.',
+    );
   }
 
   // Bearer auth is required by cloud endpoints and unused by local ones; one place decides.
