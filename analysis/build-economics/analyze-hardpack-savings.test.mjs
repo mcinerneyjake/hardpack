@@ -4,15 +4,15 @@ import { mkdtempSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shouldWrite, isMain, emitSnapshot, costOf, priceKey, unpricedBlocksWrite } from './analyze-kanban-savings.mjs';
+import { shouldWrite, isMain, emitSnapshot, costOf, priceKey, unpricedBlocksWrite } from './analyze-hardpack-savings.mjs';
 
-const MODULE = fileURLToPath(new URL('./analyze-kanban-savings.mjs', import.meta.url));
+const MODULE = fileURLToPath(new URL('./analyze-hardpack-savings.mjs', import.meta.url));
 
 // tkt-48680743ed36. The whole module was top-level, so merely IMPORTING it ran the full analysis and
 // OVERWROTE the tracked snapshot — observed 2026-08-11 changing asOf, mergedPRs (155→246) and loc,
 // caught only because `git status` happened to flag the file. The snapshot is a deliberately frozen,
 // asOf-dated source for src/components/EconomicsBuildSection.tsx and published figures.
-describe('analyze-kanban-savings is inert unless run deliberately', () => {
+describe('analyze-hardpack-savings is inert unless run deliberately', () => {
   // KANBAN_REPO drives the transcript search path, so pointing it at an empty dir makes the analysis
   // find nothing and exit 1 — on ANY machine, with or without real ~/.claude sessions. That is what
   // lets the direct-run control below be deterministic here and in CI alike, without needing the

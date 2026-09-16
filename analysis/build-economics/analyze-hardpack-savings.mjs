@@ -3,7 +3,7 @@
 // cost and save vs by hand? Reconstructed from Claude Code session telemetry. Emits an
 // AGGREGATES-ONLY snapshot (safe to commit to a public repo — no per-ticket titles, no user paths).
 //
-// Run (on the machine whose ~/.claude holds the transcripts):  node analyze-kanban-savings.mjs
+// Run (on the machine whose ~/.claude holds the transcripts):  node analyze-hardpack-savings.mjs
 // Override paths with env: KANBAN_REPO, TW_REPO, OUT.
 //
 // FOUR MEASUREMENT AUDITS baked in (see README.md):
@@ -20,7 +20,7 @@ import { dirname, resolve, join } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KANBAN_REPO = process.env.KANBAN_REPO || resolve(HERE, '..', '..'); // analysis/build-economics/ -> repo root
 const TW_REPO = process.env.TW_REPO || resolve(KANBAN_REPO, '..', 'ticket-workflow');
-const OUT = process.env.OUT || join(HERE, 'kanban-savings.json');
+const OUT = process.env.OUT || join(HERE, 'hardpack-savings.json');
 const HOME = homedir();
 // Claude Code encodes a session's cwd into its project-dir name by replacing / and . with -.
 const encodeCwd = p => p.replace(/[/.]/g, '-');
@@ -90,7 +90,7 @@ const RATE = 100;          // loaded engineer $/hr
 // (tkt-6b56ae9defce).
 const OUT_OF_SCOPE = new Set(['portfolio-site', 'job-networking-tracker', 'job-tracker']);
 
-// Everything below runs ONLY as `node analyze-kanban-savings.mjs --write` (tkt-48680743ed36).
+// Everything below runs ONLY as `node analyze-hardpack-savings.mjs --write` (tkt-48680743ed36).
 //
 // It used to be top-level, so merely IMPORTING this module — to check that it still loaded — ran the
 // whole analysis and OVERWROTE the tracked snapshot. Observed 2026-08-11: asOf 2026-07-21 → 2026-08-11,
@@ -100,7 +100,7 @@ const OUT_OF_SCOPE = new Set(['portfolio-site', 'job-networking-tracker', 'job-t
 // TWO guards, because they stop different things:
 //   isMain   — an import is inert. Not just write-free: the analysis parses every session transcript,
 //              so an unguarded import costs seconds and prints a page of output as well.
-//   --write  — a direct run without it ANALYSES and PRINTS but writes nothing. kanban-savings.json is
+//   --write  — a direct run without it ANALYSES and PRINTS but writes nothing. hardpack-savings.json is
 //              a deliberately frozen, asOf-dated snapshot (tkt-b57fed1622d9, tkt-8ab21d340242) read by
 //              src/components/EconomicsBuildSection.tsx and quoted in published portfolio figures, so
 //              regenerating it is an explicit act, never a side-effect of running the analysis.
@@ -296,8 +296,8 @@ export function main(argv = process.argv.slice(2)) {
     } catch { return 0; }
   }
   const prCount = repo => existsSync(join(repo, '.git')) ? (parseInt(execSync(`git -C '${repo}' log --oneline | grep -Ec '\\(#[0-9]+\\)' || true`, { encoding: 'utf8' }).trim()) || 0) : 0;
-  const locKanban = repoLoc(KANBAN_REPO), locTw = repoLoc(TW_REPO), totalLoc = locKanban + locTw;
-  const prKanban = prCount(KANBAN_REPO), prTw = prCount(TW_REPO), totalPRs = prKanban + prTw;
+  const locHardpack = repoLoc(KANBAN_REPO), locTw = repoLoc(TW_REPO), totalLoc = locHardpack + locTw;
+  const prHardpack = prCount(KANBAN_REPO), prTw = prCount(TW_REPO), totalPRs = prHardpack + prTw;
 
   // ---- derived savings (PR-anchored) ----
   const claudeCompleted = totals.cost - unfinished.cost;
@@ -312,7 +312,7 @@ export function main(argv = process.argv.slice(2)) {
 
   const out = {
     asOf: lastTs ? new Date(lastTs).toISOString().slice(0, 10) : null,
-    generatedFor: 'kanban repo (app + agent/agentic-rag-demo) + ticket-workflow',
+    generatedFor: 'hardpack repo (app + agent/agentic-rag-demo) + ticket-workflow',
     headline: {
       publiclyVerifiable: { mergedPRs: totalPRs, loc: totalLoc, supervisedHours: +activeHours.toFixed(1), calendarDays: +days.toFixed(1), prsPerDay: +(totalPRs / (days || 1)).toFixed(1) },
       selfReported: { claudeCostUsd: { completedOnly: +claudeCompleted.toFixed(2), allSessions: +totals.cost.toFixed(2) }, tokens: totals.allTokens, billedResponses: records.size },
@@ -328,9 +328,9 @@ export function main(argv = process.argv.slice(2)) {
       unpricedUsage: unpriced,
     },
     dedup: { rawAssistantRecords: rawRecords, uniqueBilledResponses: records.size, method: 'one record per message.id (max-output); streaming partials collapsed' },
-    scope: { inScope: 'kanban repo + ticket-workflow (incl. agent/agentic-rag-demo)', excludedProjects: [...OUT_OF_SCOPE], excludedLeak: { cost: +excludedLeak.cost.toFixed(2), responses: excludedLeak.count, byProject: Object.fromEntries(Object.entries(excludedLeak.byProject).map(([k, v]) => [k, +v.toFixed(2)])) }, unattributedNote: '~45% of cost is unattributed main-branch work (planning/board/reviews) — kept as in-repo, not splittable by project' },
+    scope: { inScope: 'hardpack repo + ticket-workflow (incl. agent/agentic-rag-demo)', excludedProjects: [...OUT_OF_SCOPE], excludedLeak: { cost: +excludedLeak.cost.toFixed(2), responses: excludedLeak.count, byProject: Object.fromEntries(Object.entries(excludedLeak.byProject).map(([k, v]) => [k, +v.toFixed(2)])) }, unattributedNote: '~45% of cost is unattributed main-branch work (planning/board/reviews) — kept as in-repo, not splittable by project' },
     costBasis: { allSessions: +totals.cost.toFixed(2), completedOnly: +claudeCompleted.toFixed(2), unfinished: { cost: +unfinished.cost.toFixed(2), branches: unfinished.count, note: 'branches still open in backlog (no ship milestone and ticket not done/archived)' } },
-    counterfactual: { anchor: 'merged PRs (git-verifiable), NOT ticket counts', mergedPRs: totalPRs, prByRepo: { kanban: prKanban, ticketWorkflow: prTw }, loc: { total: totalLoc, kanban: locKanban, ticketWorkflow: locTw } },
+    counterfactual: { anchor: 'merged PRs (git-verifiable), NOT ticket counts', mergedPRs: totalPRs, prByRepo: { hardpack: prHardpack, ticketWorkflow: prTw }, loc: { total: totalLoc, hardpack: locHardpack, ticketWorkflow: locTw } },
     disclosures: [
       'Dollar cost is SELF-REPORTED from private local session transcripts — not independently reproducible. Only mergedPRs / loc / supervisedHours / velocity are publicly verifiable (git).',
       'Claude cost is a FLOOR: CI code-review API usage runs on GitHub Actions, not in local transcripts, and is not counted.',
