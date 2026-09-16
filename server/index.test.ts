@@ -988,6 +988,45 @@ describe('POST /api/intake/propose', () => {
     errSpy.mockRestore();
   });
 
+  // tkt-3953c78cffe7: the controller's own comment says a propose that is never applied must still
+  // reach the run log — but meterIntakeRun sat AFTER the loop, so a throw skipped it and the spend
+  // reached nothing at all. The two status tests above are the controls: they pin that the fault
+  // still propagates with the same classification, so this cannot be satisfied by swallowing it.
+  it('meters a run whose loop throws part way through, and still reports the fault', async () => {
+    await seedTicket('tkt-aaa', 'Existing login bug');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => { /* silence */ });
+    let chatTurn = 0;
+    vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const models = modelsReply(url);
+      if (models) return Promise.resolve(models);
+      if (url.includes('/embeddings')) {
+        return Promise.resolve(new Response(JSON.stringify({ data: [{ index: 0, embedding: [1, 0, 0] }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      chatTurn++;
+      // Turn 1 spends tokens on a real search_board call; turn 2 dies opaquely (a 500, not a 503 —
+      // an opaque fault carries no evidence the runtime is down).
+      if (chatTurn === 1) {
+        const message = { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_board', arguments: '{"query":"login"}' } }] };
+        return Promise.resolve(new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 } }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.reject(new Error('the loop blew up mid-run'));
+    }));
+
+    const before = (await readRuns()).length;
+    const res = await request(server).post('/api/intake/propose').send({ report: 'x' });
+    expect(res.status).toBe(500);                       // the fault still surfaces
+    expect(res.body.error).toBe('Internal server error');
+
+    const after = await readRuns();
+    expect(after).toHaveLength(before + 1);             // ...and the spend was NOT lost with it
+    const run = after[after.length - 1];
+    expect(run.outcome.errored).toBe(true);
+    expect(run.usage.totalTokens).toBeGreaterThan(0);
+    expect(run.ticketIds).toEqual({ created: [], updated: [] });
+    errSpy.mockRestore();
+  });
+
   it('503 when the runtime answers with a gateway status', async () => {
     await seedTicket('tkt-aaa', 'Existing login bug');
     vi.stubGlobal('fetch', vi.fn((input: string | URL | Request): Promise<Response> => {
