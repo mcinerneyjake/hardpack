@@ -298,8 +298,18 @@ process** whose cwd and environment were fixed when the session started. No shel
 these are correct in both modes and take no prefix. (Which root it resolved is a per-machine detail;
 what matters here is that a command's cwd is not an input to it.) **`EnterWorktree`/`ExitWorktree` are the
 opposite: they act on the *session's* repo**, so in foreign mode they would branch this repo rather
-than the target. Do not use them in foreign mode — if the target needs a worktree, that is a reason to
-work it from a session rooted there.
+than the target. **Do not use them in foreign mode — isolate the target with plain git instead**, which
+the target repo's own worktree can do without moving this session:
+
+```bash
+cd <target> && git worktree add --detach .claude/worktrees/<id> <base>
+```
+
+`<base>` is `origin/<default-branch>` after a fetch — or the **local `main`** where the target has no
+remote, which two mapped targets do not have. Every §2a command then takes the worktree as its `cd`
+target, `cd <target>/.claude/worktrees/<id> && …`, and the positional-matcher rule above is unchanged
+by the longer path. Copy the target's `.env` in if it has one; gitignored files do not follow a
+worktree. §15 removes it at the close.
 
 > **Attribution is correct from `ticket-workflow` v0.20.0 — but the *machine's* pin decides, not this
 > repo's.** `track-steps` resolves the directory per milestone, so a foreign-mode `cd <target> && npm
@@ -412,19 +422,71 @@ a row means the board's tickets are systematically out of date with the code, an
 the backlog rewriting bodies is not the work that was asked for. Report the three and stop. Reset the
 counter on any ticket that validates.
 
-## 6. Start and branch
+## 6. Isolate, start, branch
+
+**In that order.** Isolation comes *before* `start_ticket` so that a failed isolation cannot strand
+the ticket `in-progress`, and before the branch so the branch is never cut in a shared tree — two
+sessions in one working tree is the collision the whole ordering exists to prevent, and moving to a
+worktree afterwards leaves the edits behind rather than bringing them along.
+
+**Native.** If the session cwd is already a linked worktree — a night run, or `claude -w` — you are
+isolated; continue. Otherwise `EnterWorktree({ name: "<id>" })`, or `EnterWorktree({ path })` when
+`.claude/worktrees/<id>` already exists.
+
+**Note which of those three it was — §15 needs it, and only one of them is closable.**
+`ExitWorktree` acts *only* on a worktree this session created with `EnterWorktree({ name })`: it is a
+documented no-op elsewhere, and will not remove one entered by `path`. So for an already-isolated
+session and for a `path` entry it does nothing, silently, and any close step that assumes you left
+the worktree then runs *inside* it.
+
+**Foreign.** `EnterWorktree` acts on the *session's* repo, so it is the wrong tool here; isolate the
+target with plain git per §2a, then prefix every command with the worktree path.
+
+**Provisioning.** A worktree carries no file git does not track, so copy in what the target's own
+`CLAUDE.md` names. Two cautions that the copying itself creates:
+
+- **Check what git actually ignores, rather than trusting the filename.** A `*.local.*` or
+  `settings.local` name is not ignored by virtue of looking machine-local — verify with
+  `git status --porcelain --ignored` (`!!` is ignored, `??` is not). Anything you copy in that git
+  does **not** ignore shows as untracked, where a path-scoped `git add` can sweep a machine-local
+  file into a PR and where `git worktree remove` **refuses outright** — it tolerates ignored files
+  but not untracked ones. Delete such a file before the close, or do not copy it at all.
+- **Link `node_modules` before anything runs a test**, not merely before the gate: a suite may assert
+  its presence at the repo root rather than only importing through it, and an unlinked worktree then
+  fails on a diff that did nothing wrong. **Being late fails silently** — once a tool has created a
+  real `node_modules` for its own cache, `ln -s` drops the link *inside* that directory and exits 0.
+  Confirm the result is a symlink. A ticket bumping a dependency installs *in* the worktree instead.
+
+**A filtered test run cannot tell you whether provisioning is sufficient** — it passes green in an
+unlinked worktree while the assertion that fails sits in a file the filter never loads. Judge the
+worktree by the repo's whole gate, once, not by the subset your ticket touches.
 
 `start_ticket <id>` — it sets `in-progress` **and** returns the body in one call. Not `update_ticket`.
 
-Then cut the branch from a fresh `main` per the repo's convention (typically
-`<prefix>/<id>-<slug>`, `bug→fix · feature→feat · task→task · chore→chore`).
+Then, **inside the worktree**, cut the branch per the repo's convention (typically
+`<prefix>/<id>-<slug>`, `bug→fix · feature→feat · task→task · chore→chore`):
 
-**Inside a worktree, `main` is normally checked out in the primary and `git switch main` is refused
-as already checked out.** Branch from the remote instead: `git fetch origin main`, then
-`git switch -c <prefix>/<id>-<slug> --no-track origin/main` (without `--no-track` the new branch
-would track `origin/main` itself). Every night-run session is in a worktree
-(`tkt-c248cfbc5d8c`), and so is any session that took `EnterWorktree`; the `git switch -c` spelling
-below is unchanged, so the milestone still records.
+```bash
+git fetch origin main
+git switch -c <prefix>/<id>-<slug> --no-track origin/main
+```
+
+**Resolve the target's real base before running that.** `origin/main` assumes two things — that a
+remote exists, and that its default branch is `main` — and the first is false in mapped targets
+today: with no remote, *both* commands exit 128 and leave the session on a detached HEAD in a
+worktree it just made, with nothing here to recover from. Check `git remote`, take the default from
+`git symbolic-ref refs/remotes/origin/HEAD`, and where there is no remote branch from the local
+default instead. Keep the literal `git switch -c` spelling whichever base you use, or the
+`track-steps` milestone does not record.
+
+Branch from that base rather than switching to the local default branch, and keep `--no-track` so the
+new branch does not track it. Branching *here* also means the name is the one you typed, so the
+`worktree-<name>` branch `EnterWorktree` may have put you on never becomes the ticket branch.
+
+**`--continuous`: one worktree per ticket — except where the run owns it.** A night run makes a
+single worktree and drives *every* ticket it queues there; that one belongs to the run, which removes
+it when it finishes, and a session must never close it. Otherwise §15 releases this ticket's worktree
+before §16 returns to §4.
 
 **Use the literal command spellings** `git switch -c`, `npm run typecheck`, `npm run lint`,
 `npm test`, `gh pr create` — the `track-steps` hook keys pipeline milestones off those exact strings
@@ -699,11 +761,37 @@ that stops being a stale ticket and starts being a stale board.
 
 ## 15. Close the ticket — wrap-up check, then the handoff
 
-The merge is not the close. After the merge lands, in this order: `ExitWorktree` if the ticket ran in
-one (native mode only — see §2a), `update_ticket({ status: 'done' })`, then the three subsections below.
+The merge is not the close. After the merge lands, in this order: release the worktree the ticket ran
+in, `update_ticket({ status: 'done' })`, then the three subsections below.
 None is optional, and none is a courtesy — a ticket that merges without them leaves work that only this
 session knew about. The table's two columns are the two that a run *owes an answer for*; the audit
 between them is an input to the first, which is why it is not a third column.
+
+**Releasing the worktree depends on which of §6's cases you are in, and two of them release nothing.**
+Take the one you noted there, and say which:
+
+- **You created it with `EnterWorktree({ name })`** → `ExitWorktree`. This is the only case that
+  that both leaves the worktree and can remove it.
+- **You entered an existing one with `EnterWorktree({ path })`** → `ExitWorktree({ action: "keep" })`
+  returns the session to its original directory but leaves the worktree on disk; it cannot remove one
+  entered this way. Say that it is still there.
+- **You were already isolated** — a night run, `claude -w` → **release nothing.** `ExitWorktree` is a
+  no-op here, and a night run's worktree is shared by every ticket it queues and removed by the run
+  itself. Removing it by hand destroys the run's working tree mid-run.
+- **Foreign mode** → the worktree belongs to the target repo, so git removes it:
+
+```bash
+cd <target> && git worktree remove .claude/worktrees/<id>
+```
+
+**Never `-f`.** The command refuses on a dirty tree, and that refusal is a §14 stop rather than
+something to overpower — uncommitted work there is work the merge did not carry, and forcing removal
+destroys it unrecoverably. Read it, then decide. It also refuses on an **untracked, non-ignored**
+file, which is usually something §6 told you to copy in rather than work at all: delete that and
+retry, and do not confuse it for the dirty-tree stop.
+
+**In the two release-nothing cases the session is still in the worktree**, so anything below that
+assumes otherwise — a sync in the primary above all — has to be run there instead, or not at all.
 
 | ticket type | wrap-up check | handoff |
 |---|---|---|

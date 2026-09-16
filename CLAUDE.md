@@ -109,7 +109,9 @@ a section edited in place to say the opposite passes green. It is a check on the
 ## Ticket workflow
 
 1. `list_tickets` to find the ticket.
-2. `start_ticket` — sets `in-progress` and loads the body in one call. Then cut the branch.
+2. **Isolate into a worktree first** (`EnterWorktree`, or continue in one you are already in), then
+   `start_ticket` — which sets `in-progress` and loads the body in one call — then cut the branch
+   **inside that worktree**. Never in the primary; see **1. Isolate, then branch**.
 3. **Feature and bug tickets: append a `## Done when` list first** — short, observable, checkable
    outcomes, fixing the exit condition while changing it is free. **Always `appendBody`, never a
    full-body `body` overwrite.**
@@ -233,10 +235,29 @@ machine-local, so the policy below is the default wherever the hook can't reach.
 Two sessions sharing one working tree is not safe — whichever stages a shared file first absorbs the
 other's in-flight edits. Use `EnterWorktree`/`ExitWorktree`, not a hand-rolled convention.
 
-- **Rename the branch before the first commit** — `EnterWorktree` prefixes `worktree-` and rewrites
-  `/` as `+`, failing the required `branch-name` check. `git branch -m <prefix>/<id>-<slug>`.
-- **`node_modules` needs no handling** — **except** a ticket bumping a dependency, which must
-  `npm install` *in* the worktree or the suite proves nothing.
+**Isolate before you branch, not after** — the order is the whole protection, and it is cheap to get
+backwards because the ticket is already in hand when the thought occurs. A branch cut in the primary
+has already put this session's name on the shared tree; moving to a worktree afterwards leaves the
+edits behind (`tkt-5fb4376eec3c`) and can strand the work entirely: a branch pushed from a colliding
+tree that then needs a rebase cannot be pushed again, because `guard-bash` blocks every force shape
+including `--force-with-lease`. The rule that holds there is **new branch, new PR** (`tkt-3953c78cffe7`,
+PRs #374 → #375).
+
+- **Branch *inside* the worktree and no rename arises** — `git switch -c` there produces the name you
+  typed, so the ticket branch is correct from the start and `git branch -m` has nothing to do. It
+  applies only if you took the auto-created branch `EnterWorktree` puts you on, which is prefixed
+  `worktree-` with `/` rewritten as `+` and fails the required `branch-name` check. Branching inside
+  the worktree leaves that branch behind unused; `ExitWorktree({ action: "remove" })` deletes it with
+  the worktree.
+- **`node_modules` must be linked to the primary's** — `ln -s`, before anything runs a test. Node
+  resolves modules upward without it, which is exactly why it reads as unnecessary; but
+  `.claude/settings.audit.test.mjs` asserts `node_modules/ticket-workflow` exists **at the repo
+  root**, so an unlinked worktree fails the gate on a diff that did nothing wrong (measured
+  2026-09-16). **Link it before the first test run, because being late fails silently:** vitest
+  creates a real `node_modules/.vite`, and `ln -s` then drops the link *inside* that directory and
+  exits 0. Confirm the result is a symlink rather than trusting the exit code. **Except** a ticket
+  bumping a dependency, which must `npm install` *in* the worktree or the suite proves nothing about
+  the new version.
 - **Two dev servers: set `KANBAN_PORT_OFFSET`** — it shifts the API and Vite ports **together**.
 - **A night run makes its own worktree** — `.claude/worktrees/night-<stamp>`, detached at
   `origin/main`, `node_modules` **linked** to the primary's (so a dependency bump there installs into
@@ -300,18 +321,40 @@ commoner shape than a merge, so do not read an exit-2 block here as necessarily 
 `guard-subagent-gates` blocks a *subagent* merge. So an exit-2 block from that hook is the guard
 doing its job — read the message, which names the rule that fired, and do not route around it. What remains unguarded is the ordinary case:
 **on the main thread with no night run active, nothing enforces the merge gate**, so treat "Ready to
-merge?" as the actual control it is. `settings.local.json` is gitignored, so its broader rules can
-only be checked locally, and `guard-subagent-gates` lives only in `~/.claude/settings.json`.
+merge?" as the actual control it is. `settings.local.json` is machine-local, so its broader rules can
+only be checked locally, and `guard-subagent-gates` lives only in `~/.claude/settings.json`. It is
+**not** gitignored, though — `.gitignore` covers `.env*`, `.claude/worktrees` and
+`.claude/skills/**/*.local.*`, and `.claude/settings.local.json` matches none of them, so it stands
+untracked in every checkout and must never be staged.
 
-### 1. Branch (at `start_ticket`)
+### 1. Isolate, then branch (at `start_ticket`)
+
+**Isolate first.** `EnterWorktree` — or continue in the one a night run already made. Then, **inside
+that worktree**:
 
 ```bash
-git switch main && git pull
-git switch -c <prefix>/<id>-<slug>
+git fetch origin main
+git switch -c <prefix>/<id>-<slug> --no-track origin/main
 ```
+
+Branch from the remote, never by switching to the local `main`. When the primary holds `main` the
+switch is refused; when a concurrent session has left the primary on a ticket branch it is **not**,
+and the switch silently moves the worktree onto `main` instead — so do not treat the refusal as a
+guard that will catch you. Without `--no-track` the new branch tracks `origin/main` itself.
 
 `<prefix>` maps the ticket `type` (`bug→fix`, `feature→feat`, `task→task`, `chore→chore`); `<id>` is
 the full ticket id; `<slug>` is the title kebab-cased to ~4–5 words.
+
+**A worktree carries no untracked file**, so `.env`,
+`.claude/skills/hardpack-workflow/repos.local.json` and `.claude/settings.local.json` must be copied
+in — without the last two a session there runs on a narrower allowlist and cannot resolve a foreign
+target. Link `node_modules` too, per **Concurrent sessions**, before anything runs a test rather than
+at the gate.
+
+**`.claude/settings.local.json` is the one to handle deliberately: it is not gitignored** (the other
+two are). Copied in, it shows as `??` — which both invites a path-scoped `git add .claude/` to sweep
+a machine-local permission file into a PR, and makes `git worktree remove` refuse at the close, since
+that command tolerates ignored files but not untracked ones. Delete it before closing the worktree.
 
 ### 2. Commit
 
@@ -361,12 +404,24 @@ per run. Then ask **"Ready to merge?"**; never merge without explicit approval, 
 
 ```bash
 gh pr merge --squash --delete-branch
-git switch main && git pull
 ```
 
 No `--admin`: the active ruleset requires checks but **0 approvals**. Then, in order:
-**`ExitWorktree`** if the ticket ran in one — an abandoned worktree leaves a stale copy of *this file*
-on disk, and stale prose **instructs** — then **`update_ticket` to `status: "done"`**.
+**`ExitWorktree`** — an abandoned worktree leaves a stale copy of *this file* on disk, and stale prose
+**instructs** — then `git switch main && git pull` **in the primary**, then **`update_ticket` to
+`status: "done"`**.
+
+**The sync belongs after `ExitWorktree`, and only once you have confirmed you actually left.** Since
+step 1 the ticket branch is always cut inside a worktree, so the session is still in one here — and
+`ExitWorktree` returns nothing to the primary unless *this* session created the worktree with
+`EnterWorktree`; it is a no-op for a night-run tree or one entered by path. Check where you are
+before running the sync, rather than assuming the previous line moved you.
+
+**Do not lean on "the primary holds `main`, so the switch is refused."** That holds only *while* it
+does. Concurrent sessions routinely leave the primary on a ticket branch, and then `main` is free:
+the switch **succeeds** and quietly moves the worktree onto `main`, which is the worse failure
+because nothing reports it. Branching from `origin/main` is right either way — but for the reason in
+step 1, not because a refusal is guaranteed to catch you.
 
 **From the embedded terminal the session has push + open-PR authority only.** Do not attempt
 `gh pr merge` there: print the URL and say merging is the human's decision.
