@@ -24,14 +24,14 @@
     },
     "portfolio-site": {
       "max": 1,
-      "path": "../../portfolio-site",
+      "path": "../portfolio-site",
       "files": 26,
       "blocks": 143,
       "enforced": true
     },
     "copart-filter": {
       "max": 4,
-      "path": "../../copart-filter",
+      "path": "../copart-filter",
       "files": 53,
       "blocks": 1093,
       "enforced": true,
@@ -44,14 +44,14 @@
     },
     "job-tracker": {
       "max": 8,
-      "path": "../../job-tracker",
+      "path": "../job-tracker",
       "files": 23,
       "blocks": 333,
       "enforced": true
     },
     "equipment-schedule": {
       "max": 11,
-      "path": "../../hvac-projects/equipment-schedule",
+      "path": "../hvac-projects/equipment-schedule",
       "files": 138,
       "blocks": 2260,
       "enforced": false,
