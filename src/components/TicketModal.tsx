@@ -8,7 +8,7 @@ import { relatedStripState } from '../lib/relatedStripState.js';
 import PipelineTracker from './PipelineTracker.js';
 import ProvenanceNote from './ProvenanceNote.js';
 import { ticketProvenance } from '../lib/provenance.js';
-import { type Prefill } from '../lib/proposalPrefill.js';
+import { type Prefill, type DroppedEnum } from '../lib/proposalPrefill.js';
 import { resolveProposalPlan, buildTicketForm, blockersForProject, isHiddenBlockerEdge, createFromUpdatePrefill } from '../lib/intakeApply.js';
 import { ticketsBlockedBy } from '../lib/blockers.js';
 import { changedFormFields } from '../lib/ticketDiff.js';
@@ -93,6 +93,9 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
   const [updateSuggestion, setUpdateSuggestion] = useState<{ ticket: Ticket; prefill: Prefill; runId: string } | null>(null);
   // Agent targeted a ticket not on the board — hold id (may be null) + prefill to surface it (never silently duplicate).
   const [updateNotFound, setUpdateNotFound] = useState<{ targetId: string | null; prefill: Prefill; runId: string } | null>(null);
+  // Enum values the agent proposed that aren't valid. Survives setDrafted(true), which unmounts the
+  // draft panel — the form is where the resulting default is actually on screen (tkt-a22ba10cd328).
+  const [droppedEnums, setDroppedEnums] = useState<DroppedEnum[]>([]);
   // Carried into Save so the draft applies through the provenance/metering endpoint.
   const [draftRunId, setDraftRunId] = useState<string | null>(initialRunId ?? null);
   const [saving, setSaving] = useState(false); // in-flight Save guard — blocks a double-submit
@@ -114,11 +117,13 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
     setUpdateSuggestion(null);
     setUpdateNotFound(null);
     setDraftRunId(null);
+    setDroppedEnums([]);
     try {
       const result = await api.intake.propose(note.trim());
       const proposal = result.proposal;
       if (!proposal) { setNoProposal(true); setDraftPhase('idle'); return; }
       const plan = resolveProposalPlan(proposal, allTickets);
+      setDroppedEnums(plan.droppedEnums);
       if (plan.mode === 'update') {
         setUpdateSuggestion({ ticket: plan.target, prefill: plan.prefill, runId: result.runId });
       } else if (plan.mode === 'not-found') {
@@ -215,6 +220,30 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
     }
   };
 
+  // Rendered on both faces of the create flow, with the tail clause differing because the FACTS
+  // differ: on the panel (update / not-found) no form is on screen and the prefill has not been
+  // applied yet, so claiming one "is showing the default" there is simply false. The drop itself is
+  // past tense in both, which also keeps the notice true after the user fixes the field by hand
+  // (tkt-a22ba10cd328, review round 1 — F2/F7).
+  const one = droppedEnums.length === 1;
+  const droppedEnumNotice = (where: 'panel' | 'form') => droppedEnums.length === 0 ? null : (
+    <div className="draft-notice draft-notice--dropped">
+      <span>
+        The agent proposed {one ? 'a value' : 'values'} that {one ? "isn't" : "aren't"} valid, so{' '}
+        {one ? 'it was' : 'they were'} dropped:{' '}
+        {droppedEnums.map((d, i) => (
+          <span key={d.field}>
+            {i > 0 ? ', ' : null}<strong>{d.field}</strong> = <code>{d.value}</code>
+          </span>
+        ))}
+        .{' '}
+        {where === 'form'
+          ? `Nothing was lost — ${one ? 'that field' : 'those fields'} fell back to the default, so set ${one ? 'it' : 'them'} yourself if the default is wrong.`
+          : `Nothing was lost — ${one ? 'that field' : 'those fields'} will use the default unless you set ${one ? 'it' : 'them'}.`}
+      </span>
+    </div>
+  );
+
   // Create flow's three faces: probing, draft-from-note, editable form.
   const showChecking = ticket === null && modelStatus === 'checking' && !drafted;
   const showDraftPanel = ticket === null && modelStatus === 'up' && !drafted;
@@ -301,6 +330,7 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
                   </span>
                 </div>
               )}
+              {droppedEnumNotice('panel')}
               <div className="draft-actions">
                 <button
                   type="button"
@@ -385,6 +415,8 @@ export default function TicketModal({ ticket, initial, initialRunId, allTickets,
               )}
             </div>
           )}
+
+          {droppedEnumNotice('form')}
 
           <div className="row">
             <label>

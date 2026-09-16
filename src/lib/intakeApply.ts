@@ -1,4 +1,4 @@
-import { proposalToPrefill, proposalTargetId, type Prefill } from './proposalPrefill.js';
+import { proposalToPrefill, proposalTargetId, droppedEnumFields, type Prefill, type DroppedEnum } from './proposalPrefill.js';
 import type { TicketFormFields } from './ticketDiff.js';
 import { CREATE_STATUS_IDS, type Ticket } from '../../shared/constants.js';
 
@@ -8,10 +8,13 @@ export interface CapturedProposal {
   args: Record<string, unknown>;
 }
 
-export type IntakePlan =
+// droppedEnums intersects the union rather than repeating on each arm, so it is mandatory on every
+// mode and a new construction site fails to compile until it carries the report (tkt-a22ba10cd328).
+export type IntakePlan = (
   | { mode: 'create'; prefill: Prefill }
   | { mode: 'update'; target: Ticket; prefill: Prefill }
-  | { mode: 'not-found'; targetId: string | null; prefill: Prefill };
+  | { mode: 'not-found'; targetId: string | null; prefill: Prefill }
+) & { droppedEnums: DroppedEnum[] };
 
 // Drop a status the CREATE path rejects (only qa among board statuses; archived can't be a create status) so createTicket defaults it instead of 400ing (tkt-727c5cacdfad). Update keeps the full status.
 function createSafePrefill(prefill: Prefill): Prefill {
@@ -35,11 +38,12 @@ export function createFromUpdatePrefill(prefill: Prefill): Prefill {
 // Routed on the ACTION: an update_ticket proposal MUST resolve to a loaded ticket; a missing/blank/unloaded id is 'not-found', never a create (which would draft a DUPLICATE — tkt-1dfa61b8830e). A create-bound prefill is status-clamped (createSafePrefill) so the draft can't 400.
 export function resolveProposalPlan(proposal: CapturedProposal, allTickets: Ticket[]): IntakePlan {
   const prefill = proposalToPrefill(proposal.args);
-  if (proposal.action !== 'update_ticket') return { mode: 'create', prefill: createSafePrefill(prefill) };
+  const droppedEnums = droppedEnumFields(proposal.args);
+  if (proposal.action !== 'update_ticket') return { mode: 'create', prefill: createSafePrefill(prefill), droppedEnums };
   const targetId = proposalTargetId(proposal) || null; // '' (blank id) collapses to null
   const target = targetId !== null ? allTickets.find((t) => t.id === targetId) : undefined;
-  if (target) return { mode: 'update', target, prefill };
-  return { mode: 'not-found', targetId, prefill: createSafePrefill(prefill) };
+  if (target) return { mode: 'update', target, prefill, droppedEnums };
+  return { mode: 'not-found', targetId, prefill: createSafePrefill(prefill), droppedEnums };
 }
 
 // Parent to seed the form with, but only if it's still an active (non-archived) ticket.
