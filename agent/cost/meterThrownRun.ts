@@ -1,6 +1,7 @@
 import { IntakeRunError, type IntakePartial } from '../runtime/loop.js';
 import { meterRun } from './meterRun.js';
 import { type RunUsage } from './usage.js';
+import { notChecked } from '../runtime/postRunCheck.js';
 
 export interface ThrownRunInput {
   model: string;
@@ -34,6 +35,7 @@ export async function meterThrownRun(err: unknown, input: ThrownRunInput): Promi
       outcome: err.partial.outcome,
       ticketIds: { created: err.partial.createdIds, updated: err.partial.updatedIds },
       cappedCreates: err.partial.cappedCreates,
+      postRunCheck: notChecked('the run threw before returning its transcript'),
       model: input.model,
       usage: input.usage,
       reviewMs: input.reviewMs,

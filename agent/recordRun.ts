@@ -11,6 +11,7 @@ import { buildSummary } from './cost/summary.js';
 import { appendRun } from './cost/runLog.js';
 import { ReplayRecorder } from './replay/replayRecorder.js';
 import { isTrace } from './replay/replayTrace.js';
+import { checkCreatedTickets } from './runtime/postRunCheck.js';
 
 // Records ONE real agent run into a replay-viewer trace JSON by wrapping chat/index/approve with the ReplayRecorder — no changes to the loop. Requires running embedding + chat models.
 //   npm run agent:record -- --out traces/create.json "the export button 500s"
@@ -77,6 +78,7 @@ async function main(): Promise<void> {
       outcome: result.outcome, reviewMs: 0, cost: summary,
       ticketIds: { created: result.createdIds, updated: result.updatedIds },
       cappedCreates: result.cappedCreates,
+      postRunCheck: await checkCreatedTickets(input, result.toolLog, result.createdIds),
     });
   } catch (err) {
     console.warn(`[runlog] failed to persist run ${result.runId}: ${err instanceof Error ? err.message : String(err)}`);

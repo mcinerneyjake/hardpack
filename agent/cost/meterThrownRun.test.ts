@@ -103,6 +103,8 @@ describe('meterThrownRun (round-trip: a throw still reaches the run log)', () =>
     const run = await readRun('run-nothing');
     expect(run?.outcome).toMatchObject({ created: 0, updated: 0, errored: true });
     expect(run?.ticketIds).toEqual({ created: [], updated: [] });
+    // No transcript survives a throw, so the check must say it did not run rather than pass.
+    expect(run?.postRunCheck?.verdict).toBe('not-checked');
   });
 
   // tkt-0d76600b9966 — a capped create is dropped work, and a run that dies afterwards must still say so.

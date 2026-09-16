@@ -882,6 +882,7 @@ describe('POST /api/intake/propose', () => {
     expect(run?.outcome).toMatchObject({ created: 0, updated: 0, noProposal: false }); // proposed, not yet applied
     expect(run?.ticketIds).toEqual({ created: [], updated: [] });
     expect(run?.cappedCreates).toBe(0);
+    expect(run?.postRunCheck).toEqual({ verdict: 'nothing-created', tickets: [] });
   });
 
   // tkt-9f09b3a1e95c round-trip (indexCache → controller → meterRun → runLog): the run record
@@ -1025,6 +1026,7 @@ describe('POST /api/intake/propose', () => {
     expect(run.outcome.errored).toBe(true);
     expect(run.usage.totalTokens).toBeGreaterThan(0);
     expect(run.ticketIds).toEqual({ created: [], updated: [] });
+    expect(run.postRunCheck?.verdict).toBe('not-checked');
     errSpy.mockRestore();
   });
 
@@ -1094,6 +1096,8 @@ describe('POST /api/intake/apply', () => {
     expect(run?.ticketIds.created).toContain(res.body.id);
     expect(run?.outcome.created).toBe(1);
     expect(run?.usage.totalTokens).toBeGreaterThan(0);
+    // The body came from the human-reviewed form, so a pass here would vouch for text the model never wrote.
+    expect(run?.postRunCheck?.verdict).toBe('not-checked');
   });
 
   // tkt-098da79e168d seam invariant: two append-only records share one runId; rollup dedupes last-wins → counted once.
@@ -1508,6 +1512,7 @@ describe('GET /api/economics', () => {
     },
     ticketIds: { created: ['tkt-x'], updated: [] },
     cappedCreates: 0,
+    postRunCheck: { verdict: 'pass', tickets: [] },
   });
 
   it('returns an aggregate summary over the run log', async () => {

@@ -30,6 +30,7 @@ function input(over: Partial<MeterRunInput> = {}): MeterRunInput {
     reviewMs: 250,
     ticketIds: { created: ['tkt-1'], updated: [] },
     cappedCreates: 0,
+    postRunCheck: { verdict: 'pass', tickets: [{ id: 'tkt-1', found: true, unsourcedIds: [] }] },
     prefixText: 'system prompt + tools',
     dynamicText: 'the run input',
     ...over,

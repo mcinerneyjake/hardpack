@@ -3,6 +3,7 @@ import { buildSummary, type RunSummary } from './summary.js';
 import { resolveCostConfig } from './costConfig.js';
 import { type RunUsage } from './usage.js';
 import { type RunOutcome } from './economics.js';
+import { type PostRunCheck } from '../runtime/postRunCheck.js';
 
 export interface MeterRunInput {
   runId: string;
@@ -12,6 +13,7 @@ export interface MeterRunInput {
   reviewMs: number;
   ticketIds: RunRecord['ticketIds'];
   cappedCreates: number;
+  postRunCheck: PostRunCheck;
   // Cacheable prefix (system prompt + tool schema), priced separately from the dynamic tail (RUN_PREFIX_TEXT).
   prefixText: string;
   // Per-run variable input (the CLI's raw prompt, or the intake report).
@@ -51,6 +53,7 @@ export async function meterRun(input: MeterRunInput): Promise<RunSummary> {
       cost,
       ticketIds: input.ticketIds,
       cappedCreates: input.cappedCreates,
+      postRunCheck: input.postRunCheck,
     });
   } catch (err) {
     console.warn(`[runlog] failed to persist run ${input.runId}: ${errMsg(err)}`);
