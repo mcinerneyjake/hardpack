@@ -13,6 +13,11 @@ export interface RunOutcome {
   declined: number;
   noProposal: boolean;
   errored: boolean;
+  // Writes the SERVICE refused (invalid enum, missing title, unknown id). Optional because runs.jsonl
+  // is append-only and every line written before tkt-354d1bdcffa9 lacks the key. Distinct from
+  // `declined` (a human said no) and from IntakeResult.cappedCreates (blocked before reaching the
+  // service) — collapsing any pair of those loses why the ticket never landed.
+  rejected?: number;
 }
 
 // Accepted = created OR updated (declined / no-proposal / error are not accepted).
@@ -27,7 +32,12 @@ export function isRunOutcome(v: unknown): v is RunOutcome {
     && 'updated' in v && typeof v.updated === 'number'
     && 'declined' in v && typeof v.declined === 'number'
     && 'noProposal' in v && typeof v.noProposal === 'boolean'
-    && 'errored' in v && typeof v.errored === 'boolean';
+    && 'errored' in v && typeof v.errored === 'boolean'
+    // Absent is valid (pre-tkt-354d1bdcffa9 lines); anything present must be a real count. A count is
+    // the only thing this can be, and the one consumer (agent/index.ts) gates a warning on `> 0` — so
+    // a hand-edited -1 or 0.5 would silently suppress that warning rather than fail loudly.
+    && (!('rejected' in v)
+      || (typeof v.rejected === 'number' && Number.isInteger(v.rejected) && v.rejected >= 0));
 }
 
 export interface EconomicsInput {

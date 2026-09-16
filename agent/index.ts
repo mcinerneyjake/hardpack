@@ -87,6 +87,11 @@ async function main(): Promise<void> {
     if (result.cappedCreates > 0) {
       console.warn(`\n! ${result.cappedCreates} further create_ticket call(s) were blocked by the per-run limit. The report covered too much — re-file the remainder as separate single-issue runs.`);
     }
+    // Same reason as the cap warning above: a refused write leaves the model free to report success,
+    // and the metered run is over by the time anyone reads the log (tkt-354d1bdcffa9).
+    if ((result.outcome.rejected ?? 0) > 0) {
+      console.warn(`\n! ${result.outcome.rejected} write(s) were refused by the service and no ticket was created for them. Re-run the report, or check the run log for the rejection text.`);
+    }
 
     // Per-run cost & economics via the shared meterRun (usage from both runtime clients). Best-effort — the tickets are already written, so a run-log failure won't fail the run.
     const usage = mergeUsage(chat.getUsage(), embedder.getUsage());

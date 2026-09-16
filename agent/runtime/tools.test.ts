@@ -10,7 +10,7 @@ import {
 } from './tools.js';
 import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
 import { TOOLS } from '../../mcp/handlers.js';
-import { createTicket, getTicket } from '../../server/tickets.js';
+import { createTicket, getTicket, listTickets } from '../../server/tickets.js';
 
 // Deterministic stub embedder (keyword -> fixed vector), as in retrieval.test.
 class StubEmbedder implements Embedder {
@@ -150,6 +150,38 @@ describe('dispatchTool — MCP delegation', () => {
     const res = await dispatchTool('get_ticket', { id: 'tkt-doesnotexist' }, index);
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('not found');
+  });
+});
+
+// The advertised enums and the predicates that reject a bad value both read shared/constants, so they
+// agree by DUPLICATION, not enforcement — and the adapter test above only proves the schema survives
+// transport. These drive a bad value through the agent path and assert the refusal is atomic
+// (tkt-354d1bdcffa9).
+describe('dispatchTool — invalid enum values are refused without writing', () => {
+  const cases: [string, Record<string, unknown>, string][] = [
+    ['priority', { title: 'x', priority: 'P1' }, 'P1'],
+    ['type', { title: 'x', type: 'defect' }, 'defect'],
+    ['status', { title: 'x', status: 'qa' }, 'qa'],
+  ];
+
+  for (const [field, args, bad] of cases) {
+    it(`refuses an invalid ${field}, names the value, and persists no ticket`, async () => {
+      const index = await DocumentIndex.build(embedder, []);
+      const before = (await listTickets()).length;
+      const res = await dispatchTool('create_ticket', args, index);
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain(bad);
+      expect(await listTickets()).toHaveLength(before);
+    });
+  }
+
+  // `qa` is a gate you transition INTO, never create in — the asymmetry CREATE_STATUS_ENUM encodes.
+  it('accepts on update the status it refuses on create', async () => {
+    const created = await createTicket({ title: 'Gate me' });
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('update_ticket', { id: created.id, status: 'qa' }, index);
+    expect(res.isError).toBeFalsy();
+    expect((await getTicket(created.id)).status).toBe('qa');
   });
 });
 

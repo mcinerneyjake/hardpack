@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { economicsLines, acceptedCount, type RunOutcome, type EconomicsInput } from './economics.js';
+import { economicsLines, acceptedCount, isRunOutcome, type RunOutcome, type EconomicsInput } from './economics.js';
 import { resolveCostConfig, type CostConfig } from './costConfig.js';
 import { emptyUsage, type RunUsage } from './usage.js';
 import { type CostLine } from './cost.js';
@@ -31,6 +31,46 @@ function amt(lines: CostLine[], label: string): number | null {
 describe('acceptedCount', () => {
   it('counts created + updated only', () => {
     expect(acceptedCount({ created: 2, updated: 1, declined: 3, noProposal: false, errored: true })).toBe(3);
+  });
+
+  it('does not credit a rejected write as accepted', () => {
+    expect(acceptedCount({ created: 0, updated: 0, declined: 0, rejected: 2, noProposal: false, errored: false })).toBe(0);
+  });
+});
+
+// `rejected` is OPTIONAL because runs.jsonl is append-only and every line written before
+// tkt-354d1bdcffa9 lacks the key — requiring it would make the whole existing log unreadable.
+describe('isRunOutcome', () => {
+  const base = { created: 1, updated: 0, declined: 0, noProposal: false, errored: false };
+
+  it('accepts a pre-existing record with no rejected key', () => {
+    expect(isRunOutcome(base)).toBe(true);
+  });
+
+  it('accepts a record carrying a numeric rejected', () => {
+    expect(isRunOutcome({ ...base, rejected: 3 })).toBe(true);
+  });
+
+  it('rejects a present-but-wrong-typed rejected rather than coercing it', () => {
+    expect(isRunOutcome({ ...base, rejected: 'lots' })).toBe(false);
+    expect(isRunOutcome({ ...base, rejected: null })).toBe(false);
+  });
+
+  // A count, not just a number: the sole consumer gates a warning on `> 0`, so a negative or
+  // fractional value would suppress it silently instead of failing loudly.
+  it('rejects a numeric rejected that is not a whole non-negative count', () => {
+    expect(isRunOutcome({ ...base, rejected: -1 })).toBe(false);
+    expect(isRunOutcome({ ...base, rejected: 0.5 })).toBe(false);
+    expect(isRunOutcome({ ...base, rejected: NaN })).toBe(false);
+    expect(isRunOutcome({ ...base, rejected: Infinity })).toBe(false);
+  });
+
+  it('still accepts zero', () => {
+    expect(isRunOutcome({ ...base, rejected: 0 })).toBe(true);
+  });
+
+  it('still rejects a record missing a required field', () => {
+    expect(isRunOutcome({ created: 1, updated: 0, declined: 0, noProposal: false })).toBe(false);
   });
 });
 
