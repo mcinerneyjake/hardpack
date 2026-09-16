@@ -69,6 +69,13 @@ export const VERDICT = {
   INSTRUMENT_BROKEN: 'INSTRUMENT_BROKEN', // the control failed, so nothing here is believable
 };
 
+/**
+ * Printed with every verdict. Each run is spawned once and never repeated, so a verdict is one
+ * model reply per run: disclosed, not changed (`tkt-b678f8cb17a2`).
+ */
+export const SAMPLE_NOTE =
+  'Sample: each run (control and isolated) asks the model once and is never repeated, so this verdict rests on at most one model answer per run.';
+
 export const ARM = {
   PRESENT: 'MARKER_PRESENT',
   ABSENT: 'MARKER_ABSENT',
@@ -269,8 +276,8 @@ export function assertInstruments() {
   }
 }
 
-function runClaude({ args, cwd, timeoutMs }) {
-  const r = spawnSync('claude', args, { cwd, timeout: timeoutMs, encoding: 'utf8' });
+function runClaude({ args, cwd, timeoutMs, spawn }) {
+  const r = spawn('claude', args, { cwd, timeout: timeoutMs, encoding: 'utf8' });
   // Keep whatever was captured before the failure; the error is appended, never substituted,
   // so a message on stderr can still be classified.
   if (r.error) {
@@ -334,6 +341,7 @@ export function probe({
   projectDir = REPO_ROOT,
   model = 'claude-haiku-4-5-20251001',
   timeoutMs = 180_000,
+  spawn = spawnSync,
 } = {}) {
   assertInstruments();
   // All three throw BEFORE anything is spawned or created, so an unusable configuration costs no
@@ -350,10 +358,12 @@ export function probe({
     const plan = armPlan({ scope, projectDir, neutralDir });
     const base = ['-p', resolved, '--model', model];
     const runArm = ({ cwd, bare }) =>
-      classifyArm(runClaude({ args: bare ? ['--bare', ...base] : base, cwd, timeoutMs }));
+      classifyArm(runClaude({ args: bare ? ['--bare', ...base] : base, cwd, timeoutMs, spawn }));
     const control = runArm(plan.control);
     const cleanroom = runArm(plan.cleanroom);
-    return { scope, question: resolved, arms: { control, cleanroom }, ...decide({ control, cleanroom, scope }) };
+    return {
+      scope, question: resolved, arms: { control, cleanroom }, sample: SAMPLE_NOTE, ...decide({ control, cleanroom, scope }),
+    };
   } finally {
     rmSync(neutralDir, { recursive: true, force: true });
   }
@@ -406,6 +416,7 @@ if (isMain()) {
   console.log(`control:   ${result.arms.control}`);
   console.log(`cleanroom: ${result.arms.cleanroom}`);
   console.log(`\n${result.verdict} — ${result.reason}`);
+  console.log(result.sample);
   if (result.verdict !== VERDICT.CLEAN) {
     console.log('\nDo NOT run an A/B on instruction changes until this reports CLEAN;');
     console.log('both arms would carry the same instructions and be unattributable.');

@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   classifyArm, decide, assertInstruments, exitCodeFor, armPlan, questionFor, assertProjectDir,
-  assertScope, assertNeutralDir, probe,
-  ARM, VERDICT, SCOPE, DEFAULT_QUESTION, DEFAULT_MARKER, PROJECT_QUESTION, PROJECT_MARKER_PHRASES,
+  assertScope, assertNeutralDir, probe, REPO_ROOT,
+  ARM, VERDICT, SCOPE, DEFAULT_QUESTION, DEFAULT_MARKER, PROJECT_QUESTION, PROJECT_MARKER_PHRASES, SAMPLE_NOTE,
 } from './clean-room.mjs';
 
 // tkt-b86d2a318f8b — this probe exists so that "I could not determine this" is never reported
@@ -466,6 +466,135 @@ describe('probe — refuses before spawning', () => {
   // Without it this shape reached mkdtemp before armPlan objected.
   it('refuses an unrecognised scope even when a question is supplied', () => {
     expect(() => probe({ scope: 'repo', question: 'anything at all' })).toThrow(/unrecognised scope/);
+  });
+});
+
+// tkt-b678f8cb17a2 — armPlan is pinned above, but nothing pinned that probe() hands plan.control to
+// the control run and plan.cleanroom to the isolated one: swapping those two calls left every test
+// green. The stub replaces spawnSync only, so the real runClaude still builds the argv and options.
+const MODEL = 'test-model';
+const stubSpawn = (replies) => {
+  const calls = [];
+  const spawn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts, cwdExisted: existsSync(opts.cwd) });
+    return replies[calls.length - 1];
+  };
+  return { spawn, calls };
+};
+const ok = (stdout) => ({ stdout, stderr: '', status: 0 });
+
+describe('probe — per-run spawn wiring', () => {
+  it('user scope: control runs without --bare, isolated run with it, both in one neutral dir', () => {
+    const { spawn, calls } = stubSpawn([ok('YES'), ok('NO')]);
+    const result = probe({ scope: SCOPE.USER, model: MODEL, spawn });
+    const base = ['-p', DEFAULT_QUESTION, '--model', MODEL];
+
+    expect(calls).toHaveLength(2);
+    expect(calls.map((c) => c.cmd)).toEqual(['claude', 'claude']);
+    expect(calls[0].args).toEqual(base);
+    expect(calls[1].args).toEqual(['--bare', ...base]);
+    expect(calls[0].opts.cwd).toBe(calls[1].opts.cwd);
+    expect(calls[0].opts.cwd).not.toBe(REPO_ROOT);
+    expect(calls.every((c) => c.cwdExisted)).toBe(true);
+    expect(existsSync(calls[0].opts.cwd)).toBe(false);
+    expect(result.verdict).toBe(VERDICT.CLEAN);
+  });
+
+  it('project scope: control runs in the repo, isolated run in a neutral dir, --bare in neither', () => {
+    const { spawn, calls } = stubSpawn([ok('YES'), ok('NO')]);
+    const result = probe({ scope: SCOPE.PROJECT, projectDir: HERE, model: MODEL, spawn });
+    const base = ['-p', PROJECT_QUESTION, '--model', MODEL];
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].args).toEqual(base);
+    expect(calls[1].args).toEqual(base);
+    expect(calls[0].opts.cwd).toBe(HERE);
+    expect(calls[1].opts.cwd.startsWith(join(tmpdir(), 'cleanroom-work-'))).toBe(true);
+    expect(calls[1].cwdExisted).toBe(true);
+    expect(existsSync(calls[1].opts.cwd)).toBe(false);
+    expect(result.verdict).toBe(VERDICT.CLEAN);
+  });
+
+  // No `env` key means the child inherits process.env verbatim; a key added here changes what
+  // both runs see, so it must be a deliberate edit to this test.
+  it.each([[SCOPE.USER], [SCOPE.PROJECT]])('%s scope passes cwd, timeout and encoding and nothing else', (scope) => {
+    const { spawn, calls } = stubSpawn([ok('YES'), ok('NO')]);
+    probe({ scope, projectDir: HERE, timeoutMs: 1234, spawn });
+    expect(calls).toHaveLength(2);
+    for (const { opts } of calls) {
+      expect(Object.keys(opts).sort()).toEqual(['cwd', 'encoding', 'timeout']);
+      expect(opts.timeout).toBe(1234);
+      expect(opts.encoding).toBe('utf8');
+    }
+  });
+
+  it.each([
+    ['CLEAN', [ok('YES'), ok('NO')], VERDICT.CLEAN],
+    ['NOT_ISOLATED', [ok('YES'), ok('YES')], VERDICT.NOT_ISOLATED],
+    ['BLOCKED', [ok('YES'), { stdout: 'NO', stderr: 'Not logged in', status: 0 }], VERDICT.BLOCKED],
+    ['BLOCKED on a spawn error', [ok('YES'), { stdout: null, stderr: null, status: null, error: new Error('spawnSync claude ENOENT') }], VERDICT.BLOCKED],
+    ['INSTRUMENT_BROKEN', [ok('NO'), ok('NO')], VERDICT.INSTRUMENT_BROKEN],
+  ])('reaches %s through the real probe()', (_label, replies, verdict) => {
+    for (const scope of [SCOPE.USER, SCOPE.PROJECT]) {
+      const { spawn } = stubSpawn(replies);
+      expect(probe({ scope, projectDir: HERE, spawn }).verdict).toBe(verdict);
+    }
+  });
+
+  it.each([[SCOPE.USER], [SCOPE.PROJECT]])('%s scope discloses that the verdict is one answer per run', (scope) => {
+    const { spawn } = stubSpawn([ok('YES'), ok('NO')]);
+    const { sample } = probe({ scope, projectDir: HERE, spawn });
+    expect(sample).toBe(SAMPLE_NOTE);
+    expect(sample).toMatch(/at most one model answer per run/);
+    expect(sample).toMatch(/never repeated/);
+  });
+});
+
+// With no stand-in, probe() must still launch a binary named `claude` from PATH. A fake one answers
+// instead of a model, so no real session starts; it logs each call to prove both runs happened and
+// that the child inherited the parent's environment (the log path reaches it only through env).
+// PATH holds the fake alone, so a fake that cannot execute can never fall through to a real claude.
+describe('CLI — default spawn, against a fake claude', () => {
+  const runWithFake = (args, secondAnswer) => {
+    const bin = mkdtempSync(join(tmpdir(), 'cleanroom-fakebin-'));
+    const log = join(bin, 'calls.log');
+    try {
+      writeFileSync(join(bin, 'claude'), [
+        '#!/bin/sh',
+        'if [ -s "$CLEANROOM_FAKE_LOG" ]; then answer="$CLEANROOM_FAKE_SECOND"; else answer=YES; fi',
+        'printf \'%s\\n\' "$*" >> "$CLEANROOM_FAKE_LOG"',
+        'printf \'%s\\n\' "$answer"',
+        '',
+      ].join('\n'));
+      chmodSync(join(bin, 'claude'), 0o755);
+      const env = { ...process.env, PATH: bin, CLEANROOM_FAKE_LOG: log, CLEANROOM_FAKE_SECOND: secondAnswer };
+      let status = 0;
+      let out = '';
+      try {
+        out = execFileSync(process.execPath, [join(HERE, 'clean-room.mjs'), ...args], { encoding: 'utf8', stdio: 'pipe', env });
+      } catch (e) {
+        status = e.status;
+        out = `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+      const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+      return { status, out, calls };
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  };
+
+  // CLEAN is the verdict that authorizes an A/B, so the note must print on it, not only on failures.
+  it.each([
+    ['user', 'CLEAN', []],
+    ['user', 'NOT_ISOLATED', []],
+    ['project', 'CLEAN', ['--scope', 'project', '--project-dir', HERE]],
+    ['project', 'NOT_ISOLATED', ['--scope', 'project', '--project-dir', HERE]],
+  ])('%s scope, %s: runs the fake twice and prints the one-answer-per-run note', (_scope, verdict, args) => {
+    const { status, out, calls } = runWithFake(args, verdict === VERDICT.CLEAN ? 'NO' : 'YES');
+    expect(calls).toHaveLength(2);
+    expect(out).toContain(`\n${verdict} — `);
+    expect(out).toContain(SAMPLE_NOTE);
+    expect(status).toBe(verdict === VERDICT.CLEAN ? 0 : 1);
   });
 });
 
