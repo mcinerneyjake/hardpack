@@ -177,6 +177,59 @@ describe('RuntimeChatClient (mocked fetch)', () => {
     }
   });
 
+  // tkt-fdb39a679982: measured against LM Studio — requesting an id the runtime does not serve returns
+  // 200 with `model` naming the model that ACTUALLY ran, not the request. So the reply is the one piece
+  // of post-hoc evidence about which model answered, and dropping it prices the run under the wrong id.
+  it('throws when the response names a model other than the one requested', async () => {
+    stubFetch(() => ({ json: { model: 'some-other-model', choices: [{ message: { content: 'ok' } }] } }));
+    let message = '';
+    await new RuntimeChatClient(cfg).complete([], []).catch((e: Error) => { message = e.message; });
+    expect(message).toContain('some-other-model');
+    expect(message).toContain('test-model');
+    expect(message).toContain('http://test/v1');
+    expect(message).toContain('LLM_MODEL');
+  });
+
+  it('meters a substituted call — the wrong model still burned the tokens', async () => {
+    const times = [0, 11]; let i = 0;
+    stubFetch(() => ({ json: { model: 'some-other-model', choices: [{ message: { content: 'x' } }], usage: { prompt_tokens: 3, completion_tokens: 8, total_tokens: 11 } } }));
+    const client = new RuntimeChatClient(cfg, () => times[i++]);
+    await expect(client.complete([], [])).rejects.toThrow(/some-other-model/);
+    expect(client.getUsage()).toMatchObject({ calls: 1, activeMs: 11, completionTokens: 8 });
+  });
+
+  it('passes through when the response echoes the requested model', async () => {
+    stubFetch(() => ({ json: { model: 'test-model', choices: [{ message: { content: 'ok' } }] } }));
+    expect((await new RuntimeChatClient(cfg).complete([], [])).content).toBe('ok');
+  });
+
+  // The honest limit, mirroring assertServedModel: a runtime that omits `model` leaves only the
+  // preflight list check. No field is no evidence — it must not be read as a mismatch.
+  it('passes through when the runtime omits the model field, or sends a non-string', async () => {
+    for (const model of [undefined, 42, null]) {
+      stubFetch(() => ({ json: { ...(model === undefined ? {} : { model }), choices: [{ message: { content: 'ok' } }] } }));
+      expect((await new RuntimeChatClient(cfg).complete([], [])).content).toBe('ok');
+    }
+  });
+
+  // A false positive denies service on EVERY agent path (intake CLI, web propose, recordRun, retro),
+  // so a difference carrying no information about which build ran must not throw.
+  it('passes through on a blank id, or one differing only in case or padding', async () => {
+    for (const model of ['', '   ', 'TEST-MODEL', '  test-model  ', 'Test-Model']) {
+      stubFetch(() => ({ json: { model, choices: [{ message: { content: 'ok' } }] } }));
+      expect((await new RuntimeChatClient(cfg).complete([], [])).content).toBe('ok');
+    }
+  });
+
+  // The other direction: a tag or quantization suffix names a DIFFERENT build, which is the provenance
+  // difference this guard exists to catch. Normalizing it away would defeat the ticket.
+  it('still throws on a tag or quantization suffix — a different build is a different model', async () => {
+    for (const model of ['test-model@q4_k_m', 'test-model:latest', 'test-model-2026-09-16']) {
+      stubFetch(() => ({ json: { model, choices: [{ message: { content: 'ok' } }] } }));
+      await expect(new RuntimeChatClient(cfg).complete([], [])).rejects.toThrow(/was requested/);
+    }
+  });
+
   it('reports a friendly error when the request times out', async () => {
     const original = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(original)));
