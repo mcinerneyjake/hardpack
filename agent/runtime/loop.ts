@@ -81,6 +81,15 @@ function creationCapped(max: number): ToolResult {
 // A human approval gate for a proposed mutating action. Return false to skip it.
 export type ApproveFn = (name: string, args: Record<string, unknown> | undefined) => boolean | Promise<boolean>;
 
+// Every dispatched tool result in call order, text before fencing. isError is kept here because the
+// chat transcript drops it, and the post-run check must not treat a refusal as a board read.
+export interface ToolLogEntry {
+  name: string;
+  isError: boolean;
+  text: string;
+  createdId: string | null;
+}
+
 export interface IntakeResult {
   final: string;
   messages: ChatMessage[];
@@ -94,6 +103,7 @@ export interface IntakeResult {
   // the outcome cannot carry it (a capped run is not created/declined/errored), and the model's
   // own summary is not trustworthy for this: propose.ts:18 records that exact lesson.
   cappedCreates: number;
+  toolLog: ToolLogEntry[];
 }
 
 // What a run had already done when it threw. A fault does not un-spend the tokens, and it does not
@@ -196,6 +206,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   const runId = deps.runId ?? randomUUID();
   const createdIds: string[] = [];
   const updatedIds: string[] = [];
+  const toolLog: ToolLogEntry[] = [];
   let created = 0;
   let updated = 0;
   let declinedCount = 0;
@@ -213,7 +224,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
       if (calls.length === 0) {
         const final = (assistant.content ?? '').trim() || EMPTY_SUMMARY_FALLBACK;
         const outcome = buildOutcome(created, updated, declinedCount, false, rejectedCount);
-        return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
+        return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates, toolLog };
       }
 
       for (const call of calls) {
@@ -225,7 +236,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
         if (deps.onCapture && kind) {
           const final = deps.onCapture(name, args);
           const outcome = buildOutcome(created, updated, declinedCount, false, rejectedCount, false);
-          return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates };
+          return { final, messages, steps: step, outcome, runId, createdIds, updatedIds, cappedCreates, toolLog };
         }
         // Over the create budget: short-circuit BEFORE runCall, so the write never reaches the service.
         // Falls through to the shared tally/push — isError keeps it out of `created`, and it is not a
@@ -236,11 +247,11 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
           ? { result: creationCapped(maxCreates), declined: false }
           : await runCall(name, args, deps, runId, allowedNames);
         // Accepted ONLY when neither declined nor errored — a failed create/update (missing title → 400 → isError) produced no ticket, so crediting it would make economics.ts claim manual value for work never done.
+        const createdId = kind === 'create' && !wasDeclined && !result.isError ? ticketIdOf(result) : null;
         if (kind && wasDeclined) declinedCount += 1;
         else if (kind && !result.isError) {
-          const id = ticketIdOf(result);
-          if (kind === 'create') { created += 1; if (id) createdIds.push(id); }
-          else { updated += 1; if (id) updatedIds.push(id); }
+          if (kind === 'create') { created += 1; if (createdId) createdIds.push(createdId); }
+          else { updated += 1; const id = ticketIdOf(result); if (id) updatedIds.push(id); }
         }
         // Refused by the SERVICE — the only case the operator can act on by re-filing the report.
         // Both exclusions are calls that DID reach this branch with isError set (creationCapped and the
@@ -253,6 +264,7 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
         // Only the decline and cap messages stay bare: they are the loop's own instructions. Anything
         // dispatched — board reads, write echoes, refusals — is fenced, including a tool added later.
         const fromDispatch = !overCap && !wasDeclined;
+        if (fromDispatch) toolLog.push({ name, isError: result.isError === true, text, createdId });
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -279,5 +291,5 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
   const outcome = buildOutcome(created, updated, declinedCount, true, rejectedCount);
   const final = `The agent did not finish within ${maxSteps} steps; stopping. ` +
     `${created + updated} mutation(s) were applied before the step budget ran out.`;
-  return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds, cappedCreates };
+  return { final, messages, steps: maxSteps, outcome, runId, createdIds, updatedIds, cappedCreates, toolLog };
 }

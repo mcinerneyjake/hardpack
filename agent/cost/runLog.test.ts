@@ -32,6 +32,7 @@ function mkRecord(runId: string, over: Partial<RunRecord> = {}): NewRunRecord {
     cost: { measured: [], assumed: [], externalities: [], headline: [] },
     ticketIds: { created: [], updated: [] },
     cappedCreates: 0,
+    postRunCheck: { verdict: 'pass', tickets: [] },
     ...over,
   };
 }
@@ -120,6 +121,23 @@ describe('isRunRecord', () => {
     const withoutModel: Record<string, unknown> = { ...mkRecord('run-1') };
     delete withoutModel.model;
     expect(isRunRecord(withoutModel)).toBe(false);
+  });
+
+  // tkt-586ed614fde6: every line written before the check lacks the key, and readRuns drops what fails.
+  it('accepts a record with no postRunCheck (pre-existing run log history)', () => {
+    const legacy: Record<string, unknown> = { ...mkRecord('run-1') };
+    delete legacy.postRunCheck;
+    expect(isRunRecord(legacy)).toBe(true);
+  });
+
+  it('rejects a record whose postRunCheck is malformed', () => {
+    const drift = { id: 'tkt-000000000001', found: true, unsourcedIds: [] };
+    expect(isRunRecord({ ...mkRecord('run-1'), postRunCheck: { verdict: 'fine', tickets: [] } })).toBe(false);
+    expect(isRunRecord({ ...mkRecord('run-1'), postRunCheck: { verdict: 'drift' } })).toBe(false);
+    expect(isRunRecord({ ...mkRecord('run-1'), postRunCheck: { verdict: 'drift', tickets: [{ ...drift, found: 'yes' }] } })).toBe(false);
+    expect(isRunRecord({ ...mkRecord('run-1'), postRunCheck: { verdict: 'drift', tickets: [{ ...drift, unsourcedIds: [7] }] } })).toBe(false);
+    expect(isRunRecord({ ...mkRecord('run-1'), postRunCheck: { verdict: 'not-checked', tickets: [], reason: 3 } })).toBe(false);
+    expect(isRunRecord({ ...mkRecord('run-1'), postRunCheck: { verdict: 'drift', tickets: [{ ...drift, found: null }] } })).toBe(true);
   });
 
   it('rejects a record with malformed nested usage/cost', () => {

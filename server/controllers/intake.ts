@@ -7,6 +7,7 @@ import { RUN_PREFIX_TEXT } from '../../agent/runtime/loop.js';
 import { type RunRecord } from '../../agent/cost/runLog.js';
 import { meterRun } from '../../agent/cost/meterRun.js';
 import { meterThrownRun } from '../../agent/cost/meterThrownRun.js';
+import { notChecked } from '../../agent/runtime/postRunCheck.js';
 import { mergeUsage, subtractUsage, type RunUsage } from '../../agent/cost/usage.js';
 import type { RunOutcome } from '../../agent/cost/economics.js';
 import { extractTicketFields, CREATE_STATUS_ENUM, UPDATE_STATUS_ENUM } from '../validation.js';
@@ -70,6 +71,10 @@ async function meterIntakeRun(runId: string, pending: PendingRun, outcome: RunOu
     runId, model: pending.model, usage: pending.usage, outcome, reviewMs,
     // 0 by construction: the cap only fires under createOnly, and propose halts at the first captured write.
     ticketIds, cappedCreates: 0, prefixText: RUN_PREFIX_TEXT, dynamicText: pending.report,
+    // Propose halts before any write, and apply writes the human-reviewed form, not the model's body.
+    postRunCheck: ticketIds.created.length === 0
+      ? { verdict: 'nothing-created', tickets: [] }
+      : notChecked('the ticket was written from the human-reviewed form, not by the model'),
   });
 }
 

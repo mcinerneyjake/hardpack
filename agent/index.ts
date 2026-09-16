@@ -9,6 +9,7 @@ import { mergeUsage } from './cost/usage.js';
 import { renderSummary } from './cost/summary.js';
 import { meterRun } from './cost/meterRun.js';
 import { meterThrownRun } from './cost/meterThrownRun.js';
+import { checkCreatedTickets, describeCheck } from './runtime/postRunCheck.js';
 
 // CLI entry for the local agentic-intake agent, with a stdin approval gate on every mutating action. Requires running embedding + chat models (e.g. LM Studio).
 //   npm run agent -- "the dashboard crashes when I export to CSV"
@@ -114,6 +115,12 @@ async function main(): Promise<void> {
       console.warn(`\n! ${result.outcome.rejected} write(s) were refused by the service and no ticket was created for them. Re-run the report, or check the run log for the rejection text.`);
     }
 
+    const postRunCheck = await checkCreatedTickets(input, result.toolLog, result.createdIds);
+    const findings = describeCheck(postRunCheck);
+    if (findings.length > 0) {
+      console.warn(`\n! post-run check: ${postRunCheck.verdict}\n${findings.map((f) => `  - ${f}`).join('\n')}`);
+    }
+
     // Per-run cost & economics via the shared meterRun (usage from both runtime clients). Best-effort — the tickets are already written, so a run-log failure won't fail the run.
     const usage = mergeUsage(chat.getUsage(), embedder.getUsage());
     const summary = await meterRun({
@@ -124,6 +131,7 @@ async function main(): Promise<void> {
       reviewMs,
       ticketIds: { created: result.createdIds, updated: result.updatedIds },
       cappedCreates: result.cappedCreates,
+      postRunCheck,
       prefixText,
       dynamicText: input,
     });

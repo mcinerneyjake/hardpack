@@ -5,6 +5,7 @@ import { getTicket } from '../../server/tickets.js';
 import { type RunUsage, isRunUsage } from './usage.js';
 import { type RunOutcome, isRunOutcome } from './economics.js';
 import { type RunSummary, isRunSummary } from './summary.js';
+import { type PostRunCheck, isPostRunCheck } from '../runtime/postRunCheck.js';
 
 // Append-only JSONL run log, one RunRecord per run. Behind a seam so the backend can move to SQLite later (tkt-f93c3c10c26c). Keyed by runId; a ticket's frontmatter carries the runId for the ticket → run → usage lookup.
 
@@ -30,8 +31,10 @@ export interface RunRecord {
   // create_ticket calls the per-run cap blocked (tkt-0d76600b9966). Optional only because lines written
   // before it lack the key; appendRun requires it, so every writer records one.
   cappedCreates?: number;
+  // tkt-586ed614fde6. Optional for the same reason as cappedCreates.
+  postRunCheck?: PostRunCheck;
 }
-export type NewRunRecord = RunRecord & { cappedCreates: number };
+export type NewRunRecord = RunRecord & { cappedCreates: number; postRunCheck: PostRunCheck };
 
 function isCount(v: unknown): boolean {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0;
@@ -57,7 +60,8 @@ export function isRunRecord(v: unknown): v is RunRecord {
     && 'reviewMs' in v && typeof v.reviewMs === 'number'
     && 'cost' in v && isRunSummary(v.cost)
     && 'ticketIds' in v && isTicketIds(v.ticketIds)
-    && (!('cappedCreates' in v) || isCount(v.cappedCreates));
+    && (!('cappedCreates' in v) || isCount(v.cappedCreates))
+    && (!('postRunCheck' in v) || isPostRunCheck(v.postRunCheck));
 }
 
 // flag 'a' = O_APPEND: concurrent writers stay line-atomic.
