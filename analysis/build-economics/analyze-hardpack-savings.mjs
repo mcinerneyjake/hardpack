@@ -116,6 +116,13 @@ export const isMain = invokedReal === realpathSync(fileURLToPath(import.meta.url
 /** The write gate, pure so it is testable without the (transcript-dependent) analysis around it. */
 export const shouldWrite = (argv) => argv.includes('--write');
 
+// Keyed to the walked dirs, never a slug name: a `-kanban` regex zeroed supervised hours after the
+// repo moved to projects/hardpack (tkt-cc42ea05eb4b). Subagent transcripts nest a level deeper.
+export const topLevelFiles = (files, projectDirs) => {
+  const dirs = new Set(projectDirs);
+  return new Set(files.filter(f => dirs.has(dirname(f))));
+};
+
 /**
  * Unpriced usage blocks the write (tkt-feb341a5c699). The published figure is a cost FLOOR and a
  * savings claim is computed against it, so a model this table does not know must stop the snapshot
@@ -187,7 +194,7 @@ export function main(argv = process.argv.slice(2)) {
     console.error('No transcripts found under', PROJECT_DIRS, '\nRun this on the machine whose ~/.claude holds the sessions, or set KANBAN_REPO.');
     process.exit(1);
   }
-  const topLevelSet = new Set(files.filter(f => !f.replace(/^.*-(kanban|kanban-agent)\//, '').includes('/')));
+  const topLevelSet = topLevelFiles(files, PROJECT_DIRS);
 
   // tickets (central board) — for scope filtering only; titles are NEVER written to the snapshot
   function readFrontmatter(p) {

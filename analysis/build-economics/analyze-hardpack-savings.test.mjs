@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shouldWrite, isMain, emitSnapshot, costOf, priceKey, unpricedBlocksWrite } from './analyze-hardpack-savings.mjs';
+import { shouldWrite, isMain, emitSnapshot, costOf, priceKey, unpricedBlocksWrite, topLevelFiles } from './analyze-hardpack-savings.mjs';
 
 const MODULE = fileURLToPath(new URL('./analyze-hardpack-savings.mjs', import.meta.url));
 
@@ -175,5 +175,44 @@ describe('an unpriceable model is reported, never priced at zero', () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+// tkt-cc42ea05eb4b: the match was keyed to the `-kanban` slug, so the move to projects/hardpack
+// classified every session as a subagent and published 0.0 supervised hours.
+describe('topLevelFiles classifies by the walked directory, not its name', () => {
+  const projects = path.join(path.sep, 'home', '.claude', 'projects');
+  const main = path.join(projects, '-Users-x-projects-hardpack');
+  const agent = `${main}-agent`;
+
+  it('counts a session directly in a hardpack project dir as top-level', () => {
+    const f = path.join(main, 'aaaa.jsonl');
+    expect(topLevelFiles([f], [main, agent]).has(f)).toBe(true);
+  });
+
+  it('counts a session in the -agent dir as top-level', () => {
+    const f = path.join(agent, 'bbbb.jsonl');
+    expect(topLevelFiles([f], [main, agent]).has(f)).toBe(true);
+  });
+
+  it('does not count a subagent transcript nested under a session', () => {
+    const f = path.join(main, 'aaaa', 'subagents', 'agent-1.jsonl');
+    expect(topLevelFiles([f], [main, agent]).has(f)).toBe(false);
+  });
+
+  it('does not count a sibling dir that merely shares the slug prefix', () => {
+    const f = path.join(`${main}--claude-worktrees-tkt-x`, 'cccc.jsonl');
+    expect(topLevelFiles([f], [main, agent]).has(f)).toBe(false);
+  });
+
+  it('works for any directory name, so the next rename cannot zero it', () => {
+    const other = path.join(projects, '-Users-x-projects-anything-else');
+    const top = path.join(other, 'dddd.jsonl');
+    const nested = path.join(other, 'dddd', 'subagents', 'e.jsonl');
+    expect([...topLevelFiles([top, nested], [other])]).toEqual([top]);
+  });
+
+  it('returns an empty set for no files', () => {
+    expect(topLevelFiles([], [main]).size).toBe(0);
   });
 });
