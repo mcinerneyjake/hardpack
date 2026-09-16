@@ -11,6 +11,7 @@ import { type ChatClient, type ChatMessage } from './llm.js';
 import { type DocumentIndex } from '../retrieval/retrieval.js';
 import { type ToolResult } from '../../mcp/handlers.js';
 import { type RunOutcome } from '../cost/economics.js';
+import { UNTRUSTED_BOUNDARY_RULE, fenceUntrusted } from './untrusted.js';
 
 // Tool-use loop + human-in-the-loop approval gate. Drives a ChatClient through the agent's tools to a final answer. When `approve` is supplied the gate is fail-safe: only read-only tools run freely, everything else (writes + any tool added later) routes through `approve`. Omitting `approve` is an explicit auto-approve opt-out for programmatic callers.
 
@@ -19,7 +20,8 @@ export const SYSTEM_PROMPT = `You are an intake agent for a kanban board. Given 
 2. For each issue, ALWAYS call search_board FIRST to find existing tickets.
 3. If a clear, OPEN duplicate or closely related ticket exists, prefer update_ticket over creating a new one. Each search result includes a "status" — IGNORE archived or done tickets as update targets (they are closed); create a new ticket instead, and you may reference the related closed one.
 4. Only call create_ticket when nothing OPEN on the board already covers the issue.
-When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created or updated (its id and title), or states that no action was taken and why. Never reply with an empty message.`;
+When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created or updated (its id and title), or states that no action was taken and why. Never reply with an empty message.
+${UNTRUSTED_BOUNDARY_RULE}`;
 
 // Create-only variant (the Claude-delegated path, tkt-2492e26a277a): update_ticket is not in the
 // toolset, so search_board is for REFERENCE only — never to modify an existing ticket. Steers toward a
@@ -29,7 +31,8 @@ export const SYSTEM_PROMPT_CREATE_ONLY = `You are an intake agent for a kanban b
 1. Prefer ONE ticket for the whole report. Several symptoms of one problem, or several parts of one piece of work, are ONE ticket — put the extra parts in that ticket's body as detail, do not split them out. A list inside the report is not a reason to split. Only file separate tickets when the issues are genuinely independent: different causes that could be fixed, shipped, or closed on their own.
 2. Before filing a ticket, call search_board — but ONLY to find related tickets to REFERENCE (cite the related id in that ticket's body). Search again for each further ticket you file. You cannot modify existing tickets in this mode.
 3. Then call create_ticket. Even if a duplicate or closely related ticket already exists, create a new ticket and name the related id in the body rather than trying to update it.
-When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created (its id and title). Never reply with an empty message.`;
+When finished, you MUST reply with a 1-3 sentence plain-text summary that names each ticket you created (its id and title). Never reply with an empty message.
+${UNTRUSTED_BOUNDARY_RULE}`;
 
 // Fixed cacheable prompt prefix (system prompt + tool schema), priced separately from the dynamic text. Composed ONCE so the CLI and the in-app intake controller can't drift on the cost basis (both feed it to meterRun). One per mode — the create-only prefix omits update_ticket's schema, so metering tracks the actual tools sent.
 export const RUN_PREFIX_TEXT = SYSTEM_PROMPT + JSON.stringify(AGENT_TOOLS);
@@ -246,10 +249,14 @@ export async function runIntake(input: string, deps: IntakeDeps): Promise<Intake
         // refused inside dispatchTool. Counting either would advise re-running a report against a limit
         // or a toolset that will refuse it again identically.
         else if (kind && !overCap && allowedNames.has(name)) rejectedCount += 1;
+        const text = result.content.map((c) => c.text).join('\n');
+        // Only the decline and cap messages stay bare: they are the loop's own instructions. Anything
+        // dispatched — board reads, write echoes, refusals — is fenced, including a tool added later.
+        const fromDispatch = !overCap && !wasDeclined;
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
-          content: result.content.map((c) => c.text).join('\n'),
+          content: fromDispatch ? fenceUntrusted(text) : text,
         });
       }
     }
