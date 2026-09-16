@@ -10,6 +10,7 @@ import { renderSummary } from './cost/summary.js';
 import { meterRun } from './cost/meterRun.js';
 import { meterThrownRun } from './cost/meterThrownRun.js';
 import { checkCreatedTickets, describeCheck } from './runtime/postRunCheck.js';
+import { cappedCreatesWarning, describeThrownRun } from './runtime/runReport.js';
 
 // CLI entry for the local agentic-intake agent, with a stdin approval gate on every mutating action. Requires running embedding + chat models (e.g. LM Studio).
 //   npm run agent -- "the dashboard crashes when I export to CSV"
@@ -95,20 +96,13 @@ async function main(): Promise<void> {
         model, usage: mergeUsage(chat.getUsage(), embedder.getUsage()), reviewMs, prefixText,
         dynamicText: input,
       });
-      // Name what landed BEFORE rethrowing. main()'s handler prints the fault only, and the
-      // Claude-delegated create-only flow is required to report the ids back — without this the
-      // caller sees a bare failure, re-files the same report, and duplicates the ticket that landed.
-      if (partial && (partial.createdIds.length > 0 || partial.updatedIds.length > 0)) {
-        console.error(`\n! the run wrote to the board before it failed — created ${JSON.stringify(partial.createdIds)}, updated ${JSON.stringify(partial.updatedIds)} (runId ${partial.runId})`);
-      }
+      // Name what landed BEFORE rethrowing — see describeThrownRun.
+      for (const line of describeThrownRun(partial)) console.error(`\n${line}`);
       throw err;
     }
     console.log(`\n--- Result (${result.steps} steps) ---\n${result.final}`);
-    // Deterministic, not read off the model's summary — a weak local model narrates the tickets it
-    // made and omits the ones it was blocked from making (tkt-dd22f37d1c60).
-    if (result.cappedCreates > 0) {
-      console.warn(`\n! ${result.cappedCreates} further create_ticket call(s) were blocked by the per-run limit. The report covered too much — re-file the remainder as separate single-issue runs.`);
-    }
+    const capped = cappedCreatesWarning(result.cappedCreates);
+    if (capped) console.warn(`\n${capped}`);
     // Same reason as the cap warning above: a refused write leaves the model free to report success,
     // and the metered run is over by the time anyone reads the log (tkt-354d1bdcffa9).
     if ((result.outcome.rejected ?? 0) > 0) {
