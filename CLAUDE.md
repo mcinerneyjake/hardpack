@@ -457,3 +457,82 @@ A/B first, starting with the repo-scoped ones `--scope project` can now put to b
 **Claim** and **Falsifier**, still says it is unenforced, and still names a `--scope` flag the probe
 actually defines — a rewrite reversing its meaning passes green, and no test can read what a session
 actually did.
+
+## Session retrospectives: the cadence, and what happens to a proposal
+
+`npm run retro -- [--force] <transcript.jsonl>` reads a **finished** session's transcript with the
+local model and writes candidate lessons to gitignored `retros/<sessionId>.md` (`tkt-4cda7a4ab619`).
+It never writes memory. Nothing consumed that directory, so the proposals were a queue that grew
+silently; this section is the loop that closes it (`tkt-caf80d719c0b`).
+
+**A session never retrospects itself.** Its transcript is still being written, and a session
+narrating its own run is the unreliable self-narrator recorded on `tkt-2107252ff0fb`. A retrospective
+always runs later, over a transcript that is closed.
+
+### When it runs
+
+**Event-triggered, and owed.** Run one over the just-finished session's transcript when that session
+hit any of: a hard stop, a failed premise, a `guard-bash` block, a claim you had to retract, or a
+second compaction. Those are the runs with something to learn.
+
+**Otherwise a bounded batch, and most sessions get none.** A ticket that went smoothly already
+recorded what it knows in its `## Implementation summary`, and a retrospective over it proposes
+restatements of that summary. Run a batch when the triage queue is **empty**, never to grow it.
+
+**Nothing enforces the cadence, and nothing can.** The transcript store is outside this repo, and no
+hook survives a `/clear` — `SessionEnd` runs after the context is destroyed (measured 2026-08-18).
+What is instrumented is the queue those runs produce, below. Do not report the cadence as enforced.
+
+### What happens to each proposal — four routes, and no new criteria
+
+Every lesson in a proposals file gets exactly one disposition, written into that file under a
+`## Disposition` heading, one line per lesson:
+
+```
+## Disposition
+
+- 1: memory — the substitution gotcha, recorded nowhere else
+- 2: instruction — claim and falsifier drafted on tkt-000000000000
+- 3: ticket — filed as tkt-000000000000
+- 4: drop — restates the implementation summary
+```
+
+**Each verb names a gate that already exists, and no verb is itself a promotion criterion.** A
+disposition *submits* a lesson to its gate; it never stands in for one:
+
+| verb | routes into | governed by |
+|---|---|---|
+| `memory` | the memory store | `~/.claude/CLAUDE.md`'s memory rules — one of the four types, nothing the repo already records, nothing that matters only to one conversation — plus `memory-index-gate.mjs` at write time |
+| `instruction` | a rule in this file or `SKILL.md` | **Adding an instruction** above: a **Claim** and a **Falsifier**, landing `unmeasured` until `clean-room.mjs` reports `CLEAN` |
+| `ticket` | the board | the local intake agent, **one issue per run** |
+| `drop` | nothing | a one-line reason, in the file |
+
+**Do not invent a fifth verb, and do not write a second set of criteria.** The gates above *are* the
+criteria; this vocabulary is only the routing to them. `retro-queue.mjs` reports an unrecognized verb
+as a finding rather than ignoring the line, so adding a route takes a deliberate edit in both places.
+
+**Deduplication against `MEMORY.md` is not part of this.** Whether a candidate collapses into,
+contradicts or retires an existing entry is `tkt-00666318f1d1`, which owns that question and is still
+undecided. A `memory` disposition means "worth putting through the memory rules", never "checked
+against what is already stored".
+
+### The queue is measured, the cadence is not
+
+```bash
+node scripts/probe/retro-queue.mjs .          # or --dir <path> to scan a directory directly
+```
+
+Exit **0** every proposal that has been written carries a disposition — which includes a repo where
+no retrospective has run yet, and the report says which of the two it is · **1** findings: something
+is outstanding, or a disposition line is malformed · **2** the scan did not complete.
+
+**Read a 2 as *I could not check*, never as an empty queue**, and note that the probe refuses a root
+it cannot identify as a repo rather than reporting the empty `retros/` it would find under it — an
+existing-but-wrong path is the commoner mistake than a missing one. **The full list of exit-2 causes
+is deliberately not transcribed here**; it is an allowlist in the probe, pinned by
+`retro-queue.test.mjs`, and a copy in this file would drift from it.
+
+It reads only proposals **already written**, so it never answers whether retrospectives are being
+run. `--transcripts <dir>` counts transcripts carrying no proposals file and reports that pool as
+**informational, never a finding** — under the cadence above most sessions are legitimately never
+retrospected, so treating that count as a backlog would manufacture work.
