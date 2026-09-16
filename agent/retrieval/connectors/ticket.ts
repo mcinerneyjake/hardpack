@@ -5,7 +5,7 @@ import { type Connector } from './connector.js';
 
 // The hardpack board as a connector. Ticket-specific knowledge lives here and nowhere else: title+body is the embeddable text, `status` rides through in `meta`, `updated` feeds the index cache's change signature.
 export class TicketConnector implements Connector<Ticket> {
-  readonly source = 'kanban';
+  readonly source = 'ticket';
 
   pull(): Promise<Ticket[]> {
     return listBoard().then((b) => b.tickets);

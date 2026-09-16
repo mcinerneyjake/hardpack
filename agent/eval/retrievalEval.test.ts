@@ -24,7 +24,7 @@ class ControlledEmbedder implements Embedder {
 }
 
 function doc(id: string, i: number): Document {
-  return { id, source: 'kanban', title: `title ${i}`, text: `body text for ${id} number ${i}` };
+  return { id, source: 'ticket', title: `title ${i}`, text: `body text for ${id} number ${i}` };
 }
 
 // A 6-doc board whose 4th entry is the real positive-control ticket, so the imported control constants
