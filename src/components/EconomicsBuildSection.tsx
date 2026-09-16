@@ -1,4 +1,4 @@
-import snapshot from '../../analysis/build-economics/kanban-savings.json';
+import snapshot from '../../analysis/build-economics/hardpack-savings.json';
 import { StatTile } from './EconomicsParts.js';
 import { fmtInt } from '../lib/econFormat.js';
 

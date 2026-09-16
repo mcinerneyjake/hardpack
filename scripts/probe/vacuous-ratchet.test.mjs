@@ -86,7 +86,7 @@ describe('compareToBaseline', () => {
 // and reporting another repo's ceiling.
 describe('resolveRoot binds the row to a tree', () => {
   it('uses the row path when no override is given', () => {
-    expect(resolveRoot('kanban', { path: '.' }).root).toBe(REPO_ROOT);
+    expect(resolveRoot('hardpack', { path: '.' }).root).toBe(REPO_ROOT);
   });
 
   it('REFUSES an override that is not the tree the row describes', () => {
@@ -96,7 +96,7 @@ describe('resolveRoot binds the row to a tree', () => {
   });
 
   it('accepts an override that agrees with the row', () => {
-    expect(resolveRoot('kanban', { path: '.' }, REPO_ROOT).error).toBeUndefined();
+    expect(resolveRoot('hardpack', { path: '.' }, REPO_ROOT).error).toBeUndefined();
   });
 
   it('rejects a pathless row with a mismatched directory name', () => {
@@ -117,7 +117,7 @@ describe('vacuous-baseline.json', () => {
     const repos = Object.entries(baseline.repos);
     // Lower bound, not an exact pin: adding a seventh repo must not fail the gate.
     expect(repos.length).toBeGreaterThanOrEqual(6);
-    expect(Object.keys(baseline.repos)).toContain('kanban');
+    expect(Object.keys(baseline.repos)).toContain('hardpack');
     for (const [repo, r] of repos) {
       expect(typeof r.max, repo).toBe('number');
       expect(r.max, repo).toBeGreaterThanOrEqual(0);
@@ -138,14 +138,14 @@ describe('vacuous-baseline.json', () => {
     expect(baseline._attribution).toContain('tkt-9c818426feb3');
   });
 
-  // Double-entry for the ceilings: CI enforces only kanban's row, so on every other row this pin is
+  // Double-entry for the ceilings: CI enforces only hardpack's row, so on every other row this pin is
   // the one thing standing between a quietly raised max and a merge (tkt-7bac51ae3cc6).
   it('pins every ceiling — raising one is a two-file diff a review cannot miss', () => {
     const maxes = Object.fromEntries(Object.entries(baseline.repos).map(([repo, row]) => [repo, row.max]));
     // toMatchObject, not toEqual: a seventh repo must not fail the gate (the policy the first test
     // in this describe states) — but a raised or vanished ceiling on any known repo must.
     expect(maxes).toMatchObject({
-      'kanban': 0,
+      'hardpack': 0,
       'ticket-workflow': 0,
       'portfolio-site': 1,
       'copart-filter': 4,
@@ -225,9 +225,9 @@ describe('checkRepo end to end against real trees', () => {
 
 describe('CLI', () => {
   it('exits 0 and reports this repo at its ceiling', () => {
-    const r = run(['kanban']);
+    const r = run(['hardpack']);
     expect(r.status).toBe(EXIT.OK);
-    expect(r.stdout).toContain('kanban: 0/0');
+    expect(r.stdout).toContain('hardpack: 0/0');
   });
 
   it('exits 2 on usage error', () => {
@@ -243,7 +243,7 @@ describe('CLI', () => {
   });
 
   it('distinguishes a probe error from a ceiling breach by exit code', () => {
-    const r = run(['kanban', './src/components']);
+    const r = run(['hardpack', './src/components']);
     expect(r.status).toBe(EXIT.PROBE_ERROR);
     expect(r.status).not.toBe(EXIT.BREACH);
   });
@@ -252,8 +252,8 @@ describe('CLI', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'ratchet-link-'));
     const link = path.join(dir, 'linked.mjs');
     symlinkSync(CLI, link);
-    const r = spawnSync(process.execPath, [link, 'kanban'], { cwd: REPO_ROOT, encoding: 'utf8' });
-    expect(r.stdout, 'symlinked CLI must still run').toContain('kanban');
+    const r = spawnSync(process.execPath, [link, 'hardpack'], { cwd: REPO_ROOT, encoding: 'utf8' });
+    expect(r.stdout, 'symlinked CLI must still run').toContain('hardpack');
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -262,12 +262,12 @@ describe('this repo against its own ceiling', () => {
   // The enforcement point. Now covers .claude/ too, so the guard suites that
   // prove commit-to-main is blocked are screened like any other test.
   it('has no more vacuous-test candidates than its baseline allows', () => {
-    const result = checkRepo('kanban', undefined);
+    const result = checkRepo('hardpack', undefined);
     expect(result.ok, result.message).toBe(true);
   });
 
   it('actually screens the .claude guard suites', () => {
     const b = loadBaseline();
-    expect(b.repos.kanban.files).toBeGreaterThanOrEqual(90);
+    expect(b.repos.hardpack.files).toBeGreaterThanOrEqual(90);
   });
 });

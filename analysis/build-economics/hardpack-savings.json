@@ -1,6 +1,6 @@
 {
   "asOf": "2026-07-21",
-  "generatedFor": "kanban repo (app + agent/agentic-rag-demo) + ticket-workflow",
+  "generatedFor": "hardpack repo (app + agent/agentic-rag-demo) + ticket-workflow",
   "headline": {
     "publiclyVerifiable": {
       "mergedPRs": 155,
@@ -116,7 +116,7 @@
     "method": "one record per message.id (max-output); streaming partials collapsed"
   },
   "scope": {
-    "inScope": "kanban repo + ticket-workflow (incl. agent/agentic-rag-demo)",
+    "inScope": "hardpack repo + ticket-workflow (incl. agent/agentic-rag-demo)",
     "excludedProjects": [
       "portfolio-site",
       "job-networking-tracker"
@@ -143,12 +143,12 @@
     "anchor": "merged PRs (git-verifiable), NOT ticket counts",
     "mergedPRs": 155,
     "prByRepo": {
-      "kanban": 154,
+      "hardpack": 154,
       "ticketWorkflow": 1
     },
     "loc": {
       "total": 26693,
-      "kanban": 22856,
+      "hardpack": 22856,
       "ticketWorkflow": 3837
     }
   },
