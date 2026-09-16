@@ -19,8 +19,8 @@ describe('TicketConnector.toDocument', () => {
   const connector = new TicketConnector();
 
   it('tags every document with the connector source', () => {
-    expect(connector.source).toBe('kanban');
-    expect(connector.toDocument(mk('t1', 'Fix login')).source).toBe('kanban');
+    expect(connector.source).toBe('ticket');
+    expect(connector.toDocument(mk('t1', 'Fix login')).source).toBe('ticket');
   });
 
   it('maps the ticket identity + updated stamp through', () => {
@@ -79,12 +79,12 @@ describe('TicketConnector.pull (live board)', () => {
     expect(await connector.pull()).toHaveLength(1);
   });
 
-  it('collectDocuments maps the whole board to kanban-sourced Documents', async () => {
+  it('collectDocuments maps the whole board to ticket-sourced Documents', async () => {
     await createTicket({ title: 'First' });
     await createTicket({ title: 'Second' });
     const docs = await collectDocuments(new TicketConnector());
     expect(docs).toHaveLength(2);
-    expect(docs.every((d) => d.source === 'kanban')).toBe(true);
+    expect(docs.every((d) => d.source === 'ticket')).toBe(true);
     expect(docs.map((d) => d.title).sort()).toEqual(['First', 'Second']);
   });
 });
