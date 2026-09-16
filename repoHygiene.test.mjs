@@ -70,7 +70,7 @@ function repoRoot() {
   const root = git(['rev-parse', '--show-toplevel'], here).out.trim();
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   // Identity check, not a smoke test: it is what makes "clean" mean clean HERE.
-  expect(pkg.name, 'resolved a different repository than kanban').toBe('kanban-md');
+  expect(pkg.name, 'resolved a different repository than hardpack').toBe('hardpack');
   return root;
 }
 
