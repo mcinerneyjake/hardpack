@@ -416,6 +416,42 @@ describe('pinned ticket-workflow build: guard-worktree verdicts', () => {
     expect(r.status, r.stderr).toBe(2);
   });
 
+  // tkt-2ee87aef7b7e. v0.27.0's post-merge state reopens these two shapes in the primary, so the
+  // spellings above now block on SPELLING alone and no longer pin "armed and unmerged is refused",
+  // which CLAUDE.md's merge steps rest on. This fixture needs its own origin: without one the
+  // refusal comes from `origin/main does not exist` BEFORE the merge check, and forcing that check
+  // to report merged then leaves the suite green — measured on this diff.
+  describe('post-merge state: the merge verification is what refuses', () => {
+    const MERGE_SESSION = 'pkg-contract-post-merge';
+    let repo = '';
+
+    beforeAll(() => {
+      const base = realpathSync(mkdtempSync(path.join(fixtures, 'guard-post-merge-')));
+      const origin = path.join(base, 'origin.git');
+      repo = path.join(base, 'primary');
+      git(['init', '-q', '--bare', '-b', 'main', origin], base);
+      git(['clone', '-q', origin, repo], base);
+      writeFileSync(path.join(repo, 'file.txt'), 'x\n');
+      git(['add', 'file.txt'], repo);
+      git(['commit', '-q', '-m', 'init'], repo);
+      git(['push', '-q', '-u', 'origin', 'main'], repo);
+      git(['remote', 'set-head', 'origin', 'main'], repo);
+      const armed = hook({ session_id: MERGE_SESSION, tool_name: 'mcp__kanban__start_ticket', cwd: repo, tool_input: { id: 'tkt-000000000000' } });
+      expect(armed.status, armed.stderr).toBe(0);
+    });
+
+    // origin is a local path, so githubRepo() returns null and gh is never spawned: the state is
+    // 'unknown', which must read as NOT merged.
+    it.each(['git pull --ff-only origin main', 'git checkout -- file.txt'])(
+      'blocks an armed `%s` in the primary while the started ticket is unmerged',
+      (command) => {
+        const r = hook({ session_id: MERGE_SESSION, tool_name: 'Bash', cwd: repo, tool_input: { command } });
+        expect(r.status, r.stderr).toBe(2);
+        expect(r.stderr).toMatch(/has a PR verified merged/);
+      },
+    );
+  });
+
   // Negative control: without it every block above could be an unconditional refusal.
   it('allows the same primary Edit for a session that never started a ticket', () => {
     const r = hook({ session_id: 'pkg-contract-unarmed', tool_name: 'Edit', cwd: primary, tool_input: { file_path: path.join(primary, 'file.txt') } });
