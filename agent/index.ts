@@ -10,7 +10,7 @@ import { renderSummary } from './cost/summary.js';
 import { meterRun } from './cost/meterRun.js';
 import { meterThrownRun } from './cost/meterThrownRun.js';
 import { checkCreatedTickets, describeCheck } from './runtime/postRunCheck.js';
-import { cappedCreatesWarning, describeThrownRun } from './runtime/runReport.js';
+import { cappedCreatesWarning, rejectedWritesWarning, describeThrownRun } from './runtime/runReport.js';
 
 // CLI entry for the local agentic-intake agent, with a stdin approval gate on every mutating action. Requires running embedding + chat models (e.g. LM Studio).
 //   npm run agent -- "the dashboard crashes when I export to CSV"
@@ -105,9 +105,8 @@ async function main(): Promise<void> {
     if (capped) console.warn(`\n${capped}`);
     // Same reason as the cap warning above: a refused write leaves the model free to report success,
     // and the metered run is over by the time anyone reads the log (tkt-354d1bdcffa9).
-    if ((result.outcome.rejected ?? 0) > 0) {
-      console.warn(`\n! ${result.outcome.rejected} write(s) were refused by the service and no ticket was created for them. Re-run the report, or check the run log for the rejection text.`);
-    }
+    const rejected = rejectedWritesWarning(result.outcome.rejected);
+    if (rejected) console.warn(`\n${rejected}`);
 
     const postRunCheck = await checkCreatedTickets(input, result.toolLog, result.createdIds);
     const findings = describeCheck(postRunCheck);
