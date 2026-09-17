@@ -4,10 +4,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCOPE } from './scripts/probe/clean-room.mjs';
 
-// Binds the /hardpack-workflow skill's SKILL.md to this repo's CLAUDE.md. Five surfaces survive the
-// tkt-5a4ff25d4e74 trim, kept by one rule: a drift in each would be SILENT. The rest were dropped
-// because a run stops or degrades visibly instead — see docs/skillContract-dropped-assertions.md
-// for what went, why, how to restore it, and the two the first cut dropped wrongly.
+// Binds the /hardpack-workflow skill's SKILL.md and this repo's CLAUDE.md. Some surfaces pair the
+// two; others bind one file alone, or a file against a script. Read the live set off the `it` cases
+// in the real-file describe below — a count written here is one more claim that rots. Every surface,
+// whenever it was added, is here by one rule: a drift in it would be SILENT. That rule is what the
+// tkt-5a4ff25d4e74 trim applied to the assertions predating it, dropping the ones a run stops or
+// degrades visibly without — see docs/skillContract-dropped-assertions.md for what went, why, how to
+// restore it, and the two the first cut dropped wrongly.
 //
 // NOT asserted: that a RUN obeys any of it. Nothing here observes a session, and in foreign mode
 // this suite never runs. A word-grep over the prose would be the assertion-word probe CLAUDE.md
@@ -31,11 +34,16 @@ const gateValue = (cell) => stripMarkup(cell)
   .trim()
   .toLowerCase();
 
-// A fenced line is never a heading, and never a table row. Every parser below masks with it: a
-// ```bash block whose body opens with `# ` would otherwise truncate a section slice, and a fenced
-// EXAMPLE table would parse as the real one. Measured on the gate table before this was threaded
-// through parseSkill/parseMenu: deleting the real §11–13 table and leaving a ```markdown copy of it
-// returned NO problems (tkt-5a4ff25d4e74 review, finding 4).
+// A fenced line is never a heading, and never a table row. The heading and table parsers below mask
+// with it: a ```bash block whose body opens with `# ` would otherwise truncate a section slice, and
+// a fenced EXAMPLE table would parse as the real one. Measured on the gate table before this was
+// threaded through parseSkill/parseMenu: deleting the real §11–13 table and leaving a ```markdown
+// copy of it returned NO problems (tkt-5a4ff25d4e74 review, finding 4).
+//
+// `invocationsIn` is the exception and must NOT mask: both files print the invocation it looks for
+// inside a fence, so masking would leave it nothing to find and every real pair would report as a
+// DELETED invocation. Its caller reaches it through sliceSection, which does mask, so the
+// fenced-heading false-clean stays covered on the way in.
 function fenceMask(lines) {
   let inFence = false;
   return lines.map((l) => {
