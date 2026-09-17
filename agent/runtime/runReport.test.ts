@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cappedCreatesWarning, describeThrownRun } from './runReport.js';
+import { cappedCreatesWarning, rejectedWritesWarning, describeThrownRun } from './runReport.js';
 import { type IntakePartial } from './loop.js';
 
 function outcome(): IntakePartial['outcome'] {
@@ -35,6 +35,23 @@ describe('cappedCreatesWarning', () => {
   });
 });
 
+describe('rejectedWritesWarning', () => {
+  it('names the refused count', () => {
+    expect(rejectedWritesWarning(2)).toContain('2 write(s) were refused by the service');
+  });
+
+  it('is silent when nothing was refused', () => {
+    expect(rejectedWritesWarning(0)).toBeNull();
+  });
+
+  // RunOutcome.rejected is optional (pre-tkt-354d1bdcffa9 run-log lines lack it), so undefined is the
+  // shape a persisted read supplies; NaN and Infinity both slip past the guard's `<= 0` half.
+  it('is silent on a count that is not a whole positive number', () => {
+    const bad: (number | undefined)[] = [undefined, NaN, Infinity, 1.5, -1];
+    for (const n of bad) expect(rejectedWritesWarning(n)).toBeNull();
+  });
+});
+
 describe('describeThrownRun', () => {
   it('names the ids a run wrote before it failed', () => {
     const lines = describeThrownRun(partial({ createdIds: ['tkt-a'], updatedIds: [] }));
@@ -64,5 +81,30 @@ describe('describeThrownRun', () => {
 
   it('says nothing when the error named no run', () => {
     expect(describeThrownRun(null)).toEqual([]);
+  });
+
+  // The silent case this ticket exists for: the service refused every write, so there are no ids and
+  // no cap — both other lines stay quiet and the operator hears nothing (tkt-fde6b41809d6).
+  it('reports writes the service refused, with no ids and no cap', () => {
+    const lines = describeThrownRun(partial({ outcome: { ...outcome(), rejected: 2 } }));
+    expect(lines.join('\n')).toContain('2 write(s) were refused by the service');
+  });
+
+  it('reports refused writes alongside the ids and cap lines', () => {
+    const lines = describeThrownRun(partial({
+      createdIds: ['tkt-a'], cappedCreates: 2, outcome: { ...outcome(), rejected: 3 },
+    }));
+    const text = lines.join('\n');
+    expect(text).toContain('created ["tkt-a"]');
+    expect(text).toContain('2 further create_ticket call(s) were blocked');
+    expect(text).toContain('3 write(s) were refused by the service');
+  });
+
+  it('says nothing about refusals when the outcome carries no rejected key', () => {
+    const noKey: IntakePartial['outcome'] = {
+      created: 0, updated: 0, declined: 0, noProposal: false, errored: true,
+    };
+    const lines = describeThrownRun(partial({ outcome: noKey }));
+    expect(lines.join('\n')).not.toContain('refused by the service');
   });
 });

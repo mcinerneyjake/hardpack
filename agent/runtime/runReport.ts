@@ -14,6 +14,13 @@ export function cappedCreatesWarning(cappedCreates: number): string | null {
   return `! ${cappedCreates} further create_ticket call(s) were blocked by the per-run limit. The report covered too much — re-file the remainder as separate single-issue runs.`;
 }
 
+// A refusal is the one outcome with nothing on the board to find: no id, no cap, no ticket. `rejected`
+// is optional, and NaN compares false against `<= 0` — hence Number.isInteger (tkt-354d1bdcffa9).
+export function rejectedWritesWarning(rejected: number | undefined): string | null {
+  if (!Number.isInteger(rejected) || (rejected ?? 0) <= 0) return null;
+  return `! ${rejected} write(s) were refused by the service and no ticket was created for them. Re-run the report, or check the run log for the rejection text.`;
+}
+
 // --yes auto-approves, so writes land INSIDE the loop: a throw part way through leaves tickets on
 // disk stamped with this run's id. main()'s handler prints the fault only, and the Claude-delegated
 // create-only flow is required to report the ids back — without this the caller sees a bare failure,
@@ -34,5 +41,9 @@ export function describeThrownRun(partial: IntakePartial | null): string[] {
   // run is under-reported by the ids either way (tkt-f2161edc8185).
   const capped = cappedCreatesWarning(partial.cappedCreates);
   if (capped) lines.push(capped);
+  // Also independent: a run whose every write was refused has no ids and no cap, so without this the
+  // other two lines stay silent and the refusals are never re-filed (tkt-fde6b41809d6).
+  const rejected = rejectedWritesWarning(partial.outcome.rejected);
+  if (rejected) lines.push(rejected);
   return lines;
 }
