@@ -25,11 +25,13 @@ changes skip tests, they do **not** skip the review gate.
    `description` = `[priority] type`, plus a final "Skip").
 6. On a pick, `start_ticket` — it marks in-progress and returns the body in one call.
 
-**Before step 4 or 6, sync the primary.** `start_ticket` arms `guard-worktree`, which then refuses a
-pull in the primary — and the previous ticket's session, armed, could only fetch. So if the cwd is
-the primary checkout, it is on `main` and `git status --porcelain` shows nothing tracked, run
-`git pull --ff-only` first. On any other branch or a dirty tree, **do not switch**: say so and leave
-it — that is likely a paused session's work. In a worktree there is nothing to sync.
+**Before step 4 or 6, sync the primary.** `start_ticket` arms `guard-worktree`, which refuses a pull
+in the primary for as long as any ticket the session started is unmerged — so the previous ticket's
+session may well have left the primary behind, and a `/clear` mints the unarmed id that can move it.
+So if the cwd is the primary checkout, it is on `main` and `git status --porcelain` shows nothing
+tracked, run `git pull --ff-only origin main` first — the only spelling the guard ever admits, and
+correct for an unarmed session too. On any other branch or a dirty tree, **do not switch**: say so
+and leave it — that is likely a paused session's work. In a worktree there is nothing to sync.
 
 Nothing `todo` → show the summary and wait. **Escape hatch:** a meta, analysis, planning or
 configuration request with no ticket implied skips the board load and is answered directly, **step 3
@@ -245,7 +247,10 @@ other's in-flight edits. Use `EnterWorktree`/`ExitWorktree`, not a hand-rolled c
 (`tkt-ad0806bc834f`). That exact tool name arms the session — the `npm run ticket` fallback never
 does. Once armed, an `Edit`/`Write`/`NotebookEdit` into any repo's **primary** checkout exits 2, as
 does a git verb outside the guard's read-only allowlist run there — `checkout`, `switch`, `pull`,
-`commit`. **Every `git stash` form except `list`/`show` exits 2 from anywhere**, `apply <sha>` and
+`commit`. Two of those reopen narrowly once the session's work has landed; see **The post-merge
+state** below, which is the only *sanctioned* route back into a primary — not the only one that
+works, per the residuals below — and is not a disarm.
+**Every `git stash` form except `list`/`show` exits 2 from anywhere**, `apply <sha>` and
 `drop` included, because `refs/stash` is shared by every worktree: commit to the branch instead. The
 wiring is user-scope and unversioned, so whether *this* machine carries it is state — check
 `~/.claude/settings.json` for a `guard-worktree` PreToolUse entry rather than trusting this paragraph.
@@ -274,6 +279,28 @@ wiring is user-scope and unversioned, so whether *this* machine carries it is st
   also requires both wiring entries and a byte-identical copy of `hooks/guard-worktree-precheck.mjs`.
   Bumping the tools pin means re-copying the precheck; `ticket-workflow doctor` reports a stale copy
   as `none drifted`, because it classifies the file as a launcher.
+
+**The post-merge state — cleanup reopens, the primary does not** (`tkt-c9ae67a61caf`, shipped in
+`ticket-workflow` v0.27.0). Once **every** ticket the session started has a PR that `gh` reports
+merged into *this* repo's default branch, its primary — **while sitting on that branch**, which both
+shapes require — admits exactly two shapes and nothing else: `git pull --ff-only origin main` /
+`git merge --ff-only origin/main` when no tracked file is modified and `HEAD` is an ancestor of
+upstream, and `git checkout -- <file>` / `git restore <file>` for a literal, existing, tracked
+regular file whose blob already equals origin's. The fast-forward additionally refuses when an
+untracked or ignored path in the primary collides with one the update would write — git overwrites an
+ignored file silently, so the guard will not. Everything else keeps today's block — `Edit`/`Write`,
+commits, branch creation, another repo's primary, and a **bare** `git pull --ff-only`, which follows
+`branch.main.remote`/`.merge` and can therefore name any branch at all — the operands must be exactly
+`origin main`. The condition is the merge, **never** `status: done`, which a session sets itself: an
+unverifiable merge — `gh` erroring, no PR, one still open, a PR merged into another base — leaves the
+session armed. **A merged ticket is necessary, not sufficient: the session's marker must also prove
+it names every ticket started.** That flag is sticky-false, so the state is permanently unreachable
+for a session armed by an older build (every session in flight across this bump, including the one
+that performed it), one whose parallel `start_ticket` lost the lock, and one whose payload carried no
+ticket id. The refusal reads the same as an unmerged ticket in all of those, so a `/clear` is the
+cure, not more merging. **Which version is wired is state, so probe it** rather than trusting this
+paragraph:
+`node -p "require(require('os').homedir()+'/.claude/tools/node_modules/ticket-workflow/package.json').version"`.
 
 **Isolate before you branch, not after** — the order is the whole protection, and it is cheap to get
 backwards because the ticket is already in hand when the thought occurs. A branch cut in the primary
@@ -307,8 +334,9 @@ PRs #374 → #375).
   primary holds `main`: branch from `origin/main` after a fetch.
 - **`gh pr merge --delete-branch` errors from a worktree and the merge still landed. Do not retry.**
   Confirm `gh pr view <n> --json state` is `MERGED`, then `git push origin --delete <branch>` and
-  `git fetch origin main` — not `git pull` in the primary, which `guard-worktree` refuses an armed
-  session. The local branch survives; no agent can remove it.
+  `git fetch origin main`, which works from any checkout. A bare `git pull` in the primary is refused
+  whatever the merge state; the post-merge state admits only the `--ff-only origin main` spelling, and
+  only once every started ticket is verified merged. The local branch survives; no agent can remove it.
 - **The embedded terminal is not isolated by this** — its container mounts the *host* checkout.
 
 ## Branch, commit & PR workflow
@@ -451,15 +479,17 @@ No `--admin`: the active ruleset requires checks but **0 approvals**. Then, in o
 **`ExitWorktree`** — an abandoned worktree leaves a stale copy of *this file* on disk, and stale prose
 **instructs** — then `git fetch origin main`, then **`update_ticket` to `status: "done"`**.
 
-**Fetch, not `git switch main && git pull` in the primary.** A session that called `start_ticket` is
-still armed after the merge, and `guard-worktree` refuses both in a primary checkout. The fetch
-updates shared refs from any checkout, and it is all the next branch needs, since step 1 branches
-from `origin/main`.
+**Fetch, not `git switch main && git pull` in the primary.** A session that called `start_ticket`
+stays armed after the merge, and `guard-worktree` refuses the switch outright; of the two, only the
+pull reopens, and only in the exact `git pull --ff-only origin main` shape the post-merge state
+allows (**Concurrent sessions**). The fetch needs none of those conditions, works from any checkout,
+and is all the next branch needs, since step 1 branches from `origin/main`.
 
-**The primary's `main` is synced by the *next* session**, before its first `start_ticket` (**Session
-startup**): a `/clear` mints a new, unarmed session id. Until then the primary's copy of this file —
-the one a new session loads — is behind the merge, so **say so at the merge gate**; the human may
-prefer to pull it then.
+**Syncing the primary's `main` is available to this session only once *every* ticket it started is
+verified merged** — one unmerged ticket, or a `gh` call that cannot answer, and the primary stays
+untouchable; it is then the *next* session's first step (**Session startup**), since a `/clear` mints
+a new, unarmed id. Either way the primary's copy of this file — the one a new session loads — is
+behind until someone syncs it, so **say so at the merge gate**.
 
 **From the embedded terminal the session has push + open-PR authority only.** Do not attempt
 `gh pr merge` there: print the URL and say merging is the human's decision.

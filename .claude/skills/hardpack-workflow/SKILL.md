@@ -792,10 +792,17 @@ retry, and do not confuse it for the dirty-tree stop.
 
 **In the two release-nothing cases the session is still in the worktree**, so anything below that
 assumes otherwise has to be run there instead, or not at all. The post-merge sync is not among
-them: it is `git fetch origin main`, which works from any checkout, and syncing the primary's
-`main` is the *next* session's first step, since `guard-worktree` refuses it to an armed one. Under
-`--continuous` there is no next session, so the primary stays behind for the whole loop — say so at
-each merge gate.
+them: it is `git fetch origin main`, which works from any checkout and needs nothing of the guard.
+Syncing the primary's `main` is the narrower case, and in these two cases you cannot do it from here
+at all: a worktree-isolated session's `cd <primary> && git …` is refused by the harness before
+`guard-worktree` ever judges it (measured — it refuses even a read-only `git status`). Where a
+session *can* reach the primary, `guard-worktree`'s post-merge state admits only
+`git pull --ff-only origin main`, and only once **every** ticket this session started is verified
+merged on GitHub *and* its marker proves it names them all — so a session armed by a build older than
+`ticket-workflow` v0.27.0 never qualifies. Under `--continuous` each close does meet the merge half,
+since §15 runs after the merge and before §4 takes the next ticket; what strands a loop is a ticket
+started and then abandoned, which stays in the marker and vetoes every later check. Either way, say
+at each merge gate whether the primary is still behind.
 
 | ticket type | wrap-up check | handoff |
 |---|---|---|
