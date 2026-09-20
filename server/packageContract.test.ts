@@ -10,6 +10,7 @@ import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTicket
 import { BOARD_STATUSES, PRIORITIES, type Ticket } from '../shared/constants.js';
 import { sweep, testBlocks, screenBlock, assertInstruments, controlFailures, CONTROLS, HITS } from '../scripts/probe/vacuous-tests.mjs';
 import { readEvents } from './events.js';
+import { handleToolCall } from '../mcp/handlers.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 
 // Contract tests for the PINNED ticket-workflow build, driven through hardpack's shim.
@@ -116,6 +117,36 @@ describe('pinned ticket-workflow build: unparseable frontmatter does not leak th
     expect(message).toContain('tkt-leaky01');
     expect(message, `leaks the board path: ${message}`).not.toContain(dirs.tickets);
     expect(message, `leaks a YAML parser detail: ${message}`).not.toMatch(/line \d+, column \d+/);
+  });
+});
+
+// The same redaction one layer out (package v0.25.0; deferred from tkt-9782083b72c2 by tkt-98bbca04206e).
+// handleToolCall's catch splits on HttpError — authored messages go back verbatim, anything else is a
+// raw fault whose message embeds the absolute board path, so only the errno is returned. The case above
+// drives an HttpError through the SERVICE, so nothing yet crosses the MCP layer: a bump restoring the
+// old `Unexpected error: ${err.message}` would ship host paths to every MCP client with the gate green.
+describe('pinned ticket-workflow build: an unexpected fault does not leak the path through MCP', () => {
+  it('names the tool and the errno, and not the board path', async () => {
+    const id = 'tkt-000000000000'; // must satisfy ID_RE, or ticketPath throws HttpError(400) — the wrong branch
+    // A SELF-REFERENTIAL SYMLINK, not a directory. getTicket rethrows any non-ENOENT read error raw,
+    // so both reach the non-HttpError branch — but only ELOOP, raised by open(2), names the path.
+    // EISDIR comes from read(2) after open succeeds on a directory, so its message carries no path
+    // and the leak assertion below would pass unchanged against a build that redacted nothing.
+    const file = path.join(dirs.tickets, `${id}.md`);
+    await fs.symlink(file, file);
+
+    const result = await handleToolCall('get_ticket', { id });
+    const text = result.content.map((c) => c.text).join('\n');
+
+    expect(result.isError).toBe(true);
+    // Positive control: a constant with no tool or errno in it would satisfy the absence assertion
+    // below on its own while telling the client nothing about what failed.
+    expect(text).toContain('get_ticket');
+    expect(text).toContain('ELOOP');
+    expect(text, `leaks the board path: ${text}`).not.toContain(dirs.tickets);
+    // Closes the class rather than the one interpolation: a build returning err.stack or a frame
+    // would leak the INSTALL path while the board-path needle above stayed green.
+    expect(text, `leaks a host path: ${text}`).not.toMatch(/[\\/]/);
   });
 });
 
