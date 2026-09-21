@@ -1,11 +1,11 @@
 ---
 name: hardpack-workflow
-description: Run the kanban ticket cycle for one project — audit the board, pick the highest-value ticket, validate its premise, implement, review, commit, PR, and mark done. Use only when explicitly invoked.
+description: Run the hardpack ticket cycle for one project — audit the board, pick the highest-value ticket, validate its premise, implement, review, commit, PR, and mark done. Use only when explicitly invoked.
 argument-hint: "<project> [<ticket-id>|--ticket <id>] [--gates manual|auto-commit|auto-pr] [--continuous]"
 disable-model-invocation: true
 ---
 
-# Kanban ticket cycle
+# Hardpack ticket cycle
 
 You drive the cycle. You do **not** carry the workflow spec — each repo's own `CLAUDE.md` does, and
 you read it at runtime (step 2). If you find yourself reciting testing tables, commit-message
@@ -136,7 +136,7 @@ the flag as a suggestion to confirm. Ask the project and the gate level in one `
 when both are missing — it takes several questions, and two round-trips to start one ticket is
 friction the menu does not need to cost.
 
-`kanban`'s `skillContract.test.mjs` binds that list to the §11–13 table and fails that repo's suite
+`hardpack`'s `skillContract.test.mjs` binds that list to the §11–13 table and fails that repo's suite
 when the two drift. Read the checks there rather than a summary here — enumerating them in prose is
 the transcription this repo's own rules forbid, and the first cut of this paragraph was already
 missing two of them. As with the gate table, it asserts the *list*, never that a run asks.
@@ -191,7 +191,7 @@ one from `repos.example.json` in the same directory.
 `git -C`) out of the command and judges **the target repo's** branch, so the protected-branch rules
 apply to the repo actually being written. It follows the `cd` in both directions: a `cd` into a repo
 on `main` is blocked even when the session sits on a feature branch, and a `cd` into a feature branch
-is allowed even when the session sits on `main`. Asserted against the pinned build in kanban's
+is allowed even when the session sits on `main`. Asserted against the pinned build in hardpack's
 `.claude/settings.audit.test.mjs` ("judges a cd-carrying command against the target repo, in both
 directions") — do not take it from this file's word.
 
@@ -256,8 +256,8 @@ protocol and the engineering tenets and applies everywhere.
 3. **It is silent on the mechanic** → fall back to `~/.claude/CLAUDE.md` plus the derived gate in
    §9, and **say which mechanic you are improvising**. Silence is common: several targets define
    testing and comment rules but no branch or commit convention at all.
-4. **There is no `CLAUDE.md`** → say so out loud, then as (3). Never silently assume kanban's rules
-   apply elsewhere; kanban's are the heaviest on this machine and the least likely to fit.
+4. **There is no `CLAUDE.md`** → say so out loud, then as (3). Never silently assume hardpack's rules
+   apply elsewhere; hardpack's are the heaviest on this machine and the least likely to fit.
 
 Whichever rung applies, name it. "I am on rung 3 for commit format" is checkable; "following the
 repo's rules" is not.
@@ -521,7 +521,7 @@ Read each command's exit status directly. Never read it through a pipe (in zsh t
 as a pass.
 
 **The gate is not only the npm scripts.** Where the target's `CLAUDE.md` defines checks that bind its
-tests to *this* diff — kanban names a **mutation check** and a **red-first repro** rule — those are
+tests to *this* diff — hardpack names a **mutation check** and a **red-first repro** rule — those are
 part of this step, and they run **before** the commit gate in every mode, including the auto ones that
 cross it unattended. Take the procedure, its scope and the marker it wants recorded from that file
 (step 2), never from here: a second copy of a procedure is the drift this skill exists to avoid, and
@@ -579,7 +579,7 @@ distinction is recorded.
 ## 10. Review — calibrated, and stated
 
 **The target repo decides *whether*; this step decides only *how deep*.** Read its `CLAUDE.md`
-(step 2) before calibrating: where that file makes a review a precondition of the PR — kanban's does —
+(step 2) before calibrating: where that file makes a review a precondition of the PR — hardpack's does —
 one **always** runs, and the levels below choose the effort, never the exemption. Announce the level
 and the reason *before* running it.
 
@@ -622,7 +622,7 @@ reviewer finds one dimension per round — that ticket took four rounds at ~25 a
 re-reading a diff whose remaining hole nobody had named.
 
 > **Changing either of the two paragraphs above — or any instruction — is currently unmeasurable.**
-> Run `node scripts/probe/clean-room.mjs` (in `kanban`) first. Both arms of an A/B load
+> Run `node scripts/probe/clean-room.mjs` (in `hardpack`) first. Both arms of an A/B load
 > `~/.claude/CLAUDE.md`, so a difference between them is unattributable; that confound is what
 > invalidated the `tkt-70ab03c22f43` A/B. Re-measured 2026-09-09 (`tkt-b6879d3f5daf`) it still reports
 > **BLOCKED**, with the control arm `MARKER_PRESENT`: the instrument detects instructions, the
@@ -631,7 +631,7 @@ re-reading a diff whose remaining hole nobody had named.
 >
 > Until it reports `CLEAN` this cuts **both** ways. **Do not delete an instruction on the strength of
 > an A/B** (`tkt-b86d2a318f8b`) — and do not add one described as measured: a diff adding a tenet
-> lands `unmeasured` and records its **Claim** and **Falsifier**, per kanban's `CLAUDE.md`
+> lands `unmeasured` and records its **Claim** and **Falsifier**, per hardpack's `CLAUDE.md`
 > (*"Adding an instruction"* — the phrase its contract test matches, so this reference survives a
 > reworded heading). Neither direction blocks the change; both forbid the claim.
 
@@ -667,7 +667,7 @@ than once, and `git diff` omits the untracked files a new-file ticket adds.
 The tempting version of this check — "a review pointed at the wrong repo meets a clean tree and says
 so" — does not hold. The harness falls back to a branch-vs-`main` range, and a checkout accumulates
 squash-merged branches that nothing in the cycle can clear (`git branch --list`; see the
-`gh pr merge --delete-branch` note in kanban's `CLAUDE.md`), so a misdirected review readily returns
+`gh pr merge --delete-branch` note in hardpack's `CLAUDE.md`), so a misdirected review readily returns
 a **full, confident, plausible** report about a ticket that merged weeks ago. Zero findings is a
 legitimate result and proves nothing in either direction. What separates the two cases is *whose
 files were read*.
@@ -696,13 +696,13 @@ There is no value that crosses `commit` without a review having run, so no readi
 reaches an open PR with none.
 
 **That is a claim about this table, not a guarantee about a run.** Nothing enforces it at execution
-time: `guard-bash` does not inspect `gh`, and kanban's `skillContract.test.mjs` — which fails that
+time: `guard-bash` does not inspect `gh`, and hardpack's `skillContract.test.mjs` — which fails that
 repo's gate if a column here is dropped, reordered or given a skipping value — asserts the table's
 *shape* only, and in foreign mode never runs at all. The obligation is yours; the table only removes
 the excuse.
 
 **Review resolves before the commit, which is what the column order records — do not "fix" it back.**
-The reasoning is in kanban's `CLAUDE.md` ("The review gate's ordering is deliberate"); read it there
+The reasoning is in hardpack's `CLAUDE.md` ("The review gate's ordering is deliberate"); read it there
 rather than trusting a summary here.
 
 **Merge is human in every mode.** There is no flag that changes this.
@@ -736,7 +736,7 @@ Stop, report, and wait on any of:
   nothing runs, empty reads identically to clean. Never read it as a pass.
   **Required-ness is deliberately not the condition.** `gh api repos/{owner}/{repo}/rulesets` answers
   403 on this account's **private** repos, which have no GitHub Pro (*"Upgrade to GitHub Pro or make
-  this repository public"*); public `mcinerneyjake/kanban` does answer, which is why `CLAUDE.md` can
+  this repository public"*); public `mcinerneyjake/hardpack` does answer, which is why `CLAUDE.md` can
   use that endpoint for *this* repo and this rule cannot use it generally. A stop conditioned on
   required-ness therefore cannot be verified in most repos `auto-pr` actually runs in: it either denies
   service permanently there or gets guessed at. Both readings of the older wording were defensible,
@@ -815,7 +815,7 @@ at each merge gate whether the primary is still behind.
 without being asked — not a chore, not a docs-only change. Docs tickets are if anything the likeliest
 to owe wrap-up, since they are the ones that make a neighboring claim stale.
 
-**Nothing checks this table.** `kanban`'s `skillContract.test.mjs` used to derive its rows from
+**Nothing checks this table.** `hardpack`'s `skillContract.test.mjs` used to derive its rows from
 `TYPES` in `shared/constants.ts`; that binding was dropped in `tkt-5a4ff25d4e74` because a drift here
 is read by a human at the wrap-up prompt rather than acting silently — see that repo's
 `docs/skillContract-dropped-assertions.md` for the reasoning and the restore path. The consequence to
@@ -889,7 +889,7 @@ recent half. Offer every item every time, even where you believe none applies �
 already believe apply, so the human is correcting a draft rather than auditing from scratch.
 
 - **Docs the diff falsified** — a claim in the target repo's `CLAUDE.md` or `README.md` that this
-  ticket just made stale. Governing-doc edits are never trivial (kanban's `CLAUDE.md`, "Writing these
+  ticket just made stale. Governing-doc edits are never trivial (hardpack's `CLAUDE.md`, "Writing these
   documents"), so a stale one here misinforms every later session.
 - **Board follow-ups** — a §10 review finding you chose not to fix (each becomes a ticket through the
   metered local agent, **one issue per run** — see **Never**), a ticket this one supersedes or
@@ -914,7 +914,7 @@ is the same fail-safe direction as §0's unanswered gate menu, and the same rule
 this repo: "I could not check" must never return the permissive answer.
 
 **That is a claim about this file, not about a run.** Nothing observes whether the check happened —
-the test asserts the table above, and in foreign mode kanban's suite never runs at all. The table
+the test asserts the table above, and in foreign mode hardpack's suite never runs at all. The table
 removes the excuse; it does not enforce the step.
 
 ### The handoff
@@ -940,7 +940,7 @@ directory. `<project>` is this run's project name — §0 reads the first bare t
 ticket id *as* the project, and a literal `<project>` is not one, so
 a literal `<project>` resolves against a project that is not on the board rather than falling through
 to §0's menu. Equally, never write the resolved path into *this* file, which is public
-(`repoHygiene.test.mjs` fails kanban's suite on one). Two lines, not one: whether an initial prompt can
+(`repoHygiene.test.mjs` fails hardpack's suite on one). Two lines, not one: whether an initial prompt can
 carry a slash command is not something this file has measured, so do not print a one-liner that
 assumes it.
 

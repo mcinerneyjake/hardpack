@@ -533,6 +533,37 @@ win, is deleted). `SKILL.md` must stay free of absolute paths; the project→rep
 unexpected tracked file there, reaching the **index**; `skillContract.test.mjs` binds `SKILL.md` to
 this file — **read the live set off the `it` cases in that file**, never a summary.
 
+**The surviving `kanban` strings are mostly decisions, not misses — do not "finish the rename"**
+(`tkt-1032230e15c7`, the rename's final sweep). The principle that drove the rename was **`kanban`
+survives where it names the generic board concept or a wire protocol; `hardpack` replaces it where it
+names the product** — but **the principle does not by itself derive the keep-list**, so do not
+re-derive one from it. Three categories survive for reasons it does not express:
+
+- **Renaming would break live state.** The `kanban` MCP server key and every `mcp__kanban__*` tool
+  name are what `guard-ticket` and `guard-worktree` match on, wired in **tracked**
+  `.claude/settings.json`, in `~/.claude/settings.json` **and** in untracked
+  `.claude/settings.local.json` — so a rename is not blocked, but a matcher left stale in the two
+  machine-local copies fails **open**, silently. The Docker label keys
+  (`kanban.session`/`.root`/`.created`), the `kanban-terminal` image, `/kanban-home`,
+  `kanban-entrypoint.sh` and `~/.kanban-terminal/home` name **already-running containers and existing
+  on-disk host state**; renaming orphans them. `kanbanRoot()` and the `KANBAN_*` env var names ride
+  with those — note `kanbanRoot()` *does* name the product (`terminalProjects.ts` calls it the
+  hardpack repo root), which is exactly why the principle alone would wrongly retire it.
+- **Records that must stay byte-true** — the archive banners in `docs/claude-md/` ("prose lifted
+  verbatim out of kanban's `CLAUDE.md`", with a commit to diff against), dated audit tables in
+  `analysis/`, and verbatim quotes of what a past run printed or a past invocation typed (`SKILL.md`
+  §0). Rewriting one to today's name falsifies the record it exists to preserve.
+- **Occurrences that name nothing** — generic board-concept prose, `embedPrefixes.ts`'s
+  generic-domain instruction to the embedding model (duplicated verbatim in
+  `agent/eval/fixtures/baseline.json`, and **nothing asserts the two equal**), and arbitrary fixture
+  data (`project: 'kanban'`, temp-dir prefixes, `adoption-markers.mjs`'s synthetic controls).
+
+**That list is not exhaustive, so an unlisted occurrence is a question, not a mandate** — decide which
+of the three it is before touching it. Re-enumerate rather than trusting it (`git grep -i kanban`),
+reading two limits off the instrument: it searches **tracked files only**, so the `mcp__kanban__*`
+entries in untracked `.claude/settings.local.json` never appear, and **a zero result means the command
+is wrong, not that the rename is finished**.
+
 **Probes:** a recurring, code-shaped question gets a tested probe under `scripts/probe/` with a
 built-in control that fails loud — never an ad-hoc grep. Each throws rather than return a false zero,
 and exits non-zero rather than call an unscannable target clean; read the header of the one you need.

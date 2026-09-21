@@ -163,7 +163,7 @@ dead port so the create modal always falls back to the manual form.
 ## Layout
 
 ```
-kanban/
+hardpack/
 ├── server/          Express API: routes → controllers → package service (shims in tickets.ts, events.ts)
 ├── mcp/             stdio entrypoint for the package's MCP handlers
 ├── agent/           intake agent: retrieval · runtime · cost · eval · replay
