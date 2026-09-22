@@ -392,9 +392,8 @@ doing its job — read the message, which names the rule that fired, and do not 
 **on the main thread with no night run active, nothing enforces the merge gate**, so treat "Ready to
 merge?" as the actual control it is. `settings.local.json` is machine-local, so its broader rules can
 only be checked locally, and `guard-subagent-gates` lives only in `~/.claude/settings.json`. It is
-**not** gitignored, though — `.gitignore` covers `.env*`, `.claude/worktrees` and
-`.claude/skills/**/*.local.*`, and `.claude/settings.local.json` matches none of them, so it stands
-untracked in every checkout and must never be staged.
+gitignored by the repo `.gitignore` itself — pinned, with global excludes disabled, by
+`repoHygiene.test.mjs` — on `main` since `tkt-77b6c8d57b11`.
 
 ### 1. Isolate, then branch (at `start_ticket`)
 
@@ -417,13 +416,11 @@ the full ticket id; `<slug>` is the title kebab-cased to ~4–5 words.
 **A worktree carries no untracked file**, so `.env`,
 `.claude/skills/hardpack-workflow/repos.local.json` and `.claude/settings.local.json` must be copied
 in — without the last two a session there runs on a narrower allowlist and cannot resolve a foreign
-target. Link `node_modules` too, per **Concurrent sessions**, before anything runs a test rather than
-at the gate.
-
-**`.claude/settings.local.json` is the one to handle deliberately: it is not gitignored** (the other
-two are). Copied in, it shows as `??` — which both invites a path-scoped `git add .claude/` to sweep
-a machine-local permission file into a PR, and makes `git worktree remove` refuse at the close, since
-that command tolerates ignored files but not untracked ones. Delete it before closing the worktree.
+target. All three are gitignored (see **Branch, commit & PR workflow**), except in a tree cut from before
+`tkt-77b6c8d57b11` on a machine with no global rule for it: there a copied `settings.local.json`
+reads `??`, where `git add .claude/` sweeps it in and `git worktree remove` refuses, so delete it
+before the close. Link `node_modules` too, per **Concurrent sessions**, before anything runs a test
+rather than at the gate.
 
 ### 2. Commit
 
