@@ -92,15 +92,67 @@ const latestSummary = () => {
   return JSON.parse(readFileSync(join(dir, stampDir, 'summary.json'), 'utf8'));
 };
 
+// tkt-c0dfe86b6856 — a named budget, because a bare 5s literal made this a contention detector: the
+// child must spawn, import night-run.mjs and clear its pre-flight before it can park, and a starved
+// child misses that deadline while behaving correctly. Widening costs nothing on the passing path —
+// the poll returns the moment the marker lands — and weakens no control, since a child that never
+// parks still fails, only later. Same trade as the testTimeout comment in vitest.config.ts.
+// Both bounds are enforced, not merely documented. Below the floor the window is back to what
+// contention trips; above the ceiling vitest's own testTimeout pre-empts the wait, so it dies as an
+// unreadable "Test timed out" before it can report which family the failure was — the ceiling test
+// below pins that against the real config rather than a transcribed number.
+const PARK_BUDGET_FLOOR_MS = 5_000;
+const PARK_BUDGET_CEILING_MS = 15_000;
+const parkBudgetFrom = (raw) => {
+  if (raw === undefined || raw === '') return 12_000;
+  const n = Number(raw);
+  // Throws rather than defaulting: `Number(raw) || 12_000` would swallow a typo and silently restore
+  // a window nobody chose — the same false negative, reintroduced through the escape hatch. The
+  // range is part of that: a sub-millisecond value is "positive" yet drains every child instantly,
+  // and an over-large one is accepted here only to fail later as a timeout.
+  if (!Number.isFinite(n) || n <= PARK_BUDGET_FLOOR_MS || n > PARK_BUDGET_CEILING_MS) {
+    throw new Error(
+      `NIGHT_RUN_TEST_PARK_MS must be a number of ms in (${PARK_BUDGET_FLOOR_MS}, ${PARK_BUDGET_CEILING_MS}], got ${JSON.stringify(raw)}. `
+      + 'Below the floor, machine contention trips it; above the ceiling, the suite testTimeout pre-empts '
+      + 'the wait before it can report why it failed. Raising the ceiling means raising testTimeout too.',
+    );
+  }
+  return n;
+};
+const PARK_BUDGET_MS = parkBudgetFrom(process.env.NIGHT_RUN_TEST_PARK_MS);
+
 // Polls rather than sleeping a fixed interval: the child has to spawn, import and clear its
 // pre-flight before it arms, and a fixed wait would be either flaky or slow.
-const waitFor = async (pred, timeoutMs = 5000) => {
+const waitFor = async (pred, timeoutMs = PARK_BUDGET_MS) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (pred()) return true;
     await new Promise((r) => setTimeout(r, 25));
   }
   return false;
+};
+
+// Reports WHICH family a red is, which is the whole reason this is not a bare boolean: a runner that
+// never parks and a machine too busy to let it park are otherwise indistinguishable — both just run
+// out the clock. An exited child can never write the marker, so that verdict is definitive and ends
+// the wait immediately rather than spending the budget to reach the same answer.
+const waitForPark = async (pred, child, budgetMs = PARK_BUDGET_MS) => {
+  const started = Date.now();
+  let closed = false;
+  child.once('close', () => { closed = true; });
+  // exitCode/signalCode cover a child that died before this listener was attached; 'close' never
+  // re-fires for it.
+  const gone = () => closed || child.exitCode !== null || child.signalCode !== null;
+  for (;;) {
+    const elapsedMs = Date.now() - started;
+    // Tested before the exit check, so a child that parks and then exits still counts as parked.
+    if (pred()) return { parked: true, reason: 'parked', elapsedMs };
+    if (gone()) return { parked: false, reason: 'the child exited without ever writing its parked marker', elapsedMs };
+    if (elapsedMs >= budgetMs) {
+      return { parked: false, reason: `no parked marker within ${budgetMs}ms and the child is still alive — a hang, or a machine too contended to let it park`, elapsedMs };
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
 };
 
 // One driver template for every subprocess case — they exist because the handlers under test end
@@ -127,7 +179,10 @@ const driverFor = (name, runSessionSrc) => {
 // session writes itself, never the sentinel: arming precedes the loop's STOP check, so a STOP
 // written on "armed" is consumed on the normal path and the signal lands on a finished run.
 // The hold timer is load-bearing: a bare pending promise holds nothing on the loop, and the child drains.
-const spawnParked = async (name, { stdout = 'ignore', prelude = '', hold = 'setTimeout(() => {}, 5000);' } = {}) => {
+// It tracks the park budget rather than sitting at its own 5s: a child that parks late under
+// contention would otherwise drain while the caller is still asserting against it, trading one flake
+// for another. Every caller SIGKILLs in a finally, so a longer hold costs no wall clock.
+const spawnParked = async (name, { stdout = 'ignore', prelude = '', hold = `setTimeout(() => {}, ${PARK_BUDGET_MS});` } = {}) => {
   const parked = join(board, 'parked');
   const driver = driverFor(name, `() => new Promise(() => {
     ${prelude}
@@ -137,14 +192,110 @@ const spawnParked = async (name, { stdout = 'ignore', prelude = '', hold = 'setT
   seed(A, 'todo');
   const child = spawn(process.execPath, [driver], { stdio: ['ignore', stdout, 'ignore'] });
   const exited = new Promise((resolve) => child.on('close', resolve));
-  const isParked = await waitFor(() => existsSync(parked));
+  const { parked: isParked, reason, elapsedMs } = await waitForPark(() => existsSync(parked), child);
   if (!isParked) {
     child.kill('SIGKILL');
     await exited;
   }
-  expect(isParked).toBe(true); // control: genuinely mid-ticket
+  // control: genuinely mid-ticket. The message names the family, so a red here is readable without
+  // re-running on a quiet machine.
+  expect(isParked, `${reason} (after ${elapsedMs}ms)`).toBe(true);
   return { ...sentinelPaths(board), child, exited };
 };
+
+// tkt-c0dfe86b6856 — tests of the harness itself. The park window decides whether a red here means
+// "the runner is broken" or "the machine was busy", and a window that cannot tell those apart makes
+// every red in this file unreadable.
+describe('the park window — whether a red in this file can be believed', () => {
+  it('detects a park that lands inside the budget', async () => {
+    let parked = false;
+    const t = setTimeout(() => { parked = true; }, 120);
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      const r = await waitForPark(() => parked, child, 4000);
+      expect(r.parked).toBe(true);
+    } finally { clearTimeout(t); child.kill('SIGKILL'); }
+  });
+
+  // The discrimination the ticket asks for: an exited child will NEVER write the marker, so this is
+  // a definitive negative and must not be spent waiting out the budget. Without the early exit the
+  // two families are indistinguishable — both just run out the clock.
+  it('calls an exited child a definitive never-parks, without burning the budget', async () => {
+    const budgetMs = 10_000;
+    const child = spawn(process.execPath, ['-e', 'process.exit(1)'], { stdio: 'ignore' });
+    const r = await waitForPark(() => false, child, budgetMs);
+    expect(r.parked).toBe(false);
+    expect(r.reason).toMatch(/exited/i);
+    // Derived from the budget, never a bare literal: a hardcoded wall-clock threshold here would be
+    // the very shape this ticket removes, in the suite whose config records 26-32 contention
+    // timeouts at four-way parallelism.
+    expect(r.elapsedMs).toBeLessThan(budgetMs / 2);
+  });
+
+  // The load-bearing line in the poll: `pred()` is tested BEFORE the exit check, so a child that
+  // parks and then dies is still parked. Inverting those two lines passed 274/274 before this case
+  // existed — a green mutation, so the guarantee was carried by a comment and nothing else. The
+  // crash.mjs consumer is exactly this shape: it writes the marker, then throws 150ms later.
+  it('counts a child that parks and then exits as parked, not as a never-parks', async () => {
+    const marker = join(board, 'park-then-exit');
+    const child = spawn(
+      process.execPath,
+      ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, ''); process.exit(0);`],
+      { stdio: 'ignore' },
+    );
+    await new Promise((r) => child.once('close', r)); // the child is definitively gone...
+    expect(existsSync(marker)).toBe(true); // control: ...and it really did park before dying
+    const r = await waitForPark(() => existsSync(marker), child, 1000);
+    expect(r.parked).toBe(true);
+  });
+
+  it('reports a live child that never parked as a hang-or-contention red, naming the budget', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      const r = await waitForPark(() => false, child, 200);
+      expect(r.parked).toBe(false);
+      expect(r.reason).toMatch(/200ms/);
+      expect(r.reason).toMatch(/still alive/i);
+    } finally { child.kill('SIGKILL'); }
+  });
+
+  // Named for the EFFECTIVE budget, not the default: with the env var set this is a statement about
+  // the override, so the message has to name it or a mistyped export points the operator at a
+  // constant they never touched. The default is covered on its own below.
+  it('runs on an effective budget clear of the window contention trips', () => {
+    const override = process.env.NIGHT_RUN_TEST_PARK_MS ?? 'unset';
+    expect(PARK_BUDGET_MS, `effective park budget (NIGHT_RUN_TEST_PARK_MS=${override})`)
+      .toBeGreaterThan(PARK_BUDGET_FLOOR_MS);
+  });
+
+  // The ceiling is the bound easily lost, and `<` does not express it: a budget 1ms under the
+  // timeout is legal by that test and still cannot print anything, because vitest pre-empts the wait
+  // before the assertion runs — the unreadable "Test timed out" this ticket set out to remove. So
+  // the whole LEGAL RANGE, not just today's value, must clear the timeout with room to spare, read
+  // off the config rather than transcribed so raising one without the other cannot pass.
+  it('keeps the whole legal budget range inside the suite timeout, with room to report', async () => {
+    const { default: vitestConfig } = await import('../vitest.config.js');
+    const subproc = vitestConfig.test.projects.find((p) => p.test.name === 'subproc');
+    expect(subproc.test.testTimeout).toBeGreaterThan(0); // control: the timeout is actually set here
+    expect(PARK_BUDGET_CEILING_MS * 1.25).toBeLessThanOrEqual(subproc.test.testTimeout);
+    expect(PARK_BUDGET_MS).toBeLessThanOrEqual(PARK_BUDGET_CEILING_MS);
+  });
+
+  // A `Number(raw) || DEFAULT` override would swallow a typo and silently restore a short window —
+  // the same false negative this ticket removes, reintroduced through the escape hatch. The range
+  // matters as much as the type: `0.5` is a positive number of ms that drains every child instantly,
+  // and an over-large value is accepted only to die later as a timeout.
+  it('refuses a malformed or out-of-range budget override rather than silently falling back', () => {
+    expect(parkBudgetFrom(undefined)).toBeGreaterThan(PARK_BUDGET_FLOOR_MS);
+    expect(parkBudgetFrom(undefined)).toBeLessThanOrEqual(PARK_BUDGET_CEILING_MS);
+    expect(parkBudgetFrom('14000')).toBe(14000);
+    expect(() => parkBudgetFrom('nonsense')).toThrow(/NIGHT_RUN_TEST_PARK_MS/);
+    expect(() => parkBudgetFrom('0')).toThrow(/NIGHT_RUN_TEST_PARK_MS/);
+    expect(() => parkBudgetFrom('-1')).toThrow(/NIGHT_RUN_TEST_PARK_MS/);
+    expect(() => parkBudgetFrom('0.5')).toThrow(/NIGHT_RUN_TEST_PARK_MS/); // drains every child
+    expect(() => parkBudgetFrom('45000')).toThrow(/testTimeout/); // silently un-reportable
+  });
+});
 
 describe('classify — dimension 1: the status transition', () => {
   it('todo → qa is the intended outcome and continues', () => {
