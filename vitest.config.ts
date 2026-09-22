@@ -78,6 +78,27 @@ const SHARED = {
   exclude: EXCLUDE,
 };
 
+// Files in `coverage.include` that report `file empty` — a ZERO denominator, not 0% — and so are
+// skipped in silence by `thresholds.perFile` below. Kept IN `include` rather than excluded on
+// purpose: measured on tkt-cf842880c032, appending one coverable function to `server/index.ts`
+// immediately produced four threshold ERRORs, so membership here is what makes the floor re-arm the
+// moment real logic lands. Excluding the file would throw that away to silence a cosmetic gap.
+//
+// NOT a detector, and nothing here finds a file that newly goes empty. vitest.config.test.ts checks
+// this list's internal consistency only — entries are matched by `include`, exist, and carry a
+// distinct reason. Detecting the empty set is tkt-5bb7d1a1d3e7: it means reproducing
+// `ast-v8-to-istanbul`'s raw-LINE, comment-blind ignore semantics, and two attempts to model that
+// from source were each found fail-open by review. So the risk this list exists for — a file goes
+// empty because its logic MOVED, to somewhere that may not be in `include` at all — is currently
+// caught by a human reading the coverage report, not by the suite. Do not describe it otherwise.
+export const COVERAGE_EMPTY_BY_DESIGN: Record<string, string> = {
+  'server/index.ts':
+    'Process entrypoint: imports, one binding re-export, and a bootstrap block guarded by ' +
+    'process.argv[1] that is unreachable under test and correctly `v8 ignore`d. Nothing outside ' +
+    'that block is a coverable statement, so v8 attributes 0/0. The assembled logic lives in ' +
+    'server/app.ts and server/archiveScheduler.ts.',
+};
+
 export default defineConfig({
   test: {
     ...SHARED,
