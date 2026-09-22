@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import picomatch from 'picomatch';
+
 import { describe, it, expect } from 'vitest';
-import config from './vitest.config.js';
+import config, { COVERAGE_EMPTY_BY_DESIGN } from './vitest.config.js';
 
 // Pins the collection excludes and the subprocess worker cap (the .claude/settings.audit.test.mjs
 // precedent: audit the config that nothing else would catch drifting). Deleting the worktrees glob
@@ -276,5 +277,65 @@ describe('the subprocess-suite list is re-derived, not trusted', () => {
     const excluded = projectNamed('inproc').exclude ?? [];
     expect(declared).not.toHaveLength(0);
     expect(declared.filter((suite) => !excluded.includes(suite))).toEqual([]);
+  });
+});
+
+// `server/index.ts` sits in `coverage.include` reporting `file empty` — a ZERO denominator, not 0% —
+// and raises no threshold ERROR (tkt-cf842880c032). Measured: the per-file floor is NOT broken.
+// Appending one coverable function to that file immediately produced four ERRORs under the real
+// `npm run test:coverage`. The gap is quieter than "the gate is off": no percentage of zero can
+// breach a floor, so such a file is skipped in silence, and the text reporter omits it — nothing on
+// screen distinguishes it from a file at 100%.
+//
+// These tests check the allowlist's INTERNAL CONSISTENCY ONLY. They deliberately make no claim of
+// the form "no file in coverage.include is silently unmeasurable" — DETECTING that set is
+// tkt-5bb7d1a1d3e7, because doing it from source means reproducing `ast-v8-to-istanbul`'s raw-LINE,
+// comment-blind ignore semantics exactly, and two high-effort reviews found two different sets of
+// fail-opens in two attempts to model it. A guard that fails open is worse than no guard, so the
+// claim is withheld rather than approximated.
+const COVERAGE_INCLUDE: string[] = config.test?.coverage?.include ?? [];
+const coverageRoot = path.dirname(fileURLToPath(import.meta.url));
+
+describe('coverage empty-by-design allowlist is internally consistent', () => {
+  // If this ever legitimately empties — index.ts gains real coverable logic — that is the signal to
+  // delete this block and the allowlist with it, not to relax the assertion.
+  it('is not empty, so the loops below cannot pass vacuously', () => {
+    expect(Object.keys(COVERAGE_EMPTY_BY_DESIGN)).not.toHaveLength(0);
+  });
+
+  it('keeps every allowlisted file matched by coverage.include', () => {
+    // The load-bearing one. Membership in `include` is what re-arms the per-file floor the moment
+    // real logic lands in the file, so dropping the file from `include` must redden here.
+    const isIncluded = picomatch(COVERAGE_INCLUDE);
+    const allowlisted = Object.keys(COVERAGE_EMPTY_BY_DESIGN);
+    expect(allowlisted).not.toHaveLength(0);
+    for (const file of allowlisted) {
+      expect(isIncluded(file), `${file} is allowlisted but no longer matched by coverage.include`).toBe(true);
+    }
+  });
+
+  it('names a file that still exists', () => {
+    const allowlisted = Object.keys(COVERAGE_EMPTY_BY_DESIGN);
+    expect(allowlisted).not.toHaveLength(0);
+    for (const file of allowlisted) {
+      expect(fs.existsSync(path.join(coverageRoot, file)), `${file} is allowlisted but gone`).toBe(true);
+    }
+  });
+
+  it('carries a distinct reason naming the mechanism', () => {
+    const entries = Object.entries(COVERAGE_EMPTY_BY_DESIGN);
+    expect(entries).not.toHaveLength(0);
+    for (const [file, reason] of entries) {
+      // A bare length floor accepts 'TODO: work out why this file is empty later' (43 chars), so
+      // the reason must also name WHICH mechanism emptied the file — that is what a later reader
+      // needs in order to judge whether it still applies.
+      expect(reason.length, `${file} needs a reason, not a placeholder`).toBeGreaterThan(40);
+      expect(reason, `${file}'s reason must name the mechanism`).toMatch(
+        /v8 ignore|re-export|barrel|types?-only|declare/i,
+      );
+    }
+    // The realistic rot once a SECOND file is added is the first entry's reason pasted verbatim.
+    const reasons = entries.map(([, r]) => r);
+    expect(new Set(reasons).size, 'two files share one reason').toBe(reasons.length);
   });
 });
