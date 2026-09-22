@@ -86,7 +86,19 @@ export default defineConfig({
         test: {
           ...SHARED,
           name: 'inproc',
-          exclude: [...EXCLUDE, ...SUBPROCESS_SUITES],
+          // Spelled as a LITERAL, not `[...EXCLUDE, ...]`. `ticket-workflow audit`'s
+          // `vitest-collection` check reads this file as source text and wants the
+          // `.claude/worktrees/**` string inside an `exclude: [ ... ]` literal under a `test`
+          // object; through a named const it sees an empty array and fails the CI gate, which is
+          // what reddened PR #395. The duplication with EXCLUDE is pinned by vitest.config.test.ts,
+          // which asserts both projects carry all four globs.
+          exclude: [
+            'e2e/**',
+            '**/node_modules/**',
+            '.claude/worktrees/**',
+            '**/.tmp-test/**',
+            ...SUBPROCESS_SUITES,
+          ],
           // Distinct groupOrder is REQUIRED, not cosmetic: vitest throws
           // "have different 'maxWorkers' but same 'sequence.groupOrder'" when two projects
           // differ in maxWorkers at the same order (measured, tkt-d5957c036ff8).
