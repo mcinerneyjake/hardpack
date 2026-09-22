@@ -28,6 +28,8 @@ coverage/
 # Machine-local skill config: absolute repo paths + private project names.
 # The tracked SKILL.md must stay free of both (hardpack is a public repo).
 .claude/skills/**/*.local.*
+# Machine-local Claude Code permissions + env — broader than the tracked settings.json (tkt-77b6c8d57b11).
+.claude/settings.local.json
 
 # Night-run sentinel + logs — machine-local runtime state, never committed (tkt-1e6a129c8d7f)
 .night-run
