@@ -53,6 +53,12 @@ so, if it was named from memory.
   still open. Never silently proceed — the state may be news to the user — and never silently
   refuse: naming a ticket is an override, and a `done` ticket with follow-up work or an
   `in-progress` one this session is resuming are both legitimate reasons to be here.
+  **For `in-progress`, the user's yes is what authorizes §6's `force: true`**, and nothing else is:
+  `start_ticket` refuses an `in-progress` ticket without it, and neither a checkpoint naming your
+  branch nor a clean `git status` stands in for the answer. Ask *before* §6, since a refused call
+  has already armed `guard-worktree`. A night run's own child (below) **never forces**: the runner
+  accepts a queued id in any status and reads it only at spawn, hours after the human queued it, so
+  an `in-progress` ticket there may be held by another session. Stop; the runner reports the halt.
 - **A night run holding this ticket may be your own parent — check before you believe otherwise, and
   check BOTH variables.** Nothing in the repo tells the two apart: `.night-run/ACTIVE/` holds one
   claim file per live runner, named by its pid, that pid's argv carries this ticket's id, and
@@ -462,6 +468,9 @@ unlinked worktree while the assertion that fails sits in a file the filter never
 worktree by the repo's whole gate, once, not by the subset your ticket touches.
 
 `start_ticket <id>` — it sets `in-progress` **and** returns the body in one call. Not `update_ticket`.
+On an already-`in-progress` ticket it refuses unless called with `force: true`, which you pass only
+on the user's yes from §0, in a single call. Any refusal means stop and report it; never retry a
+refused call with `force`.
 
 Then, **inside the worktree**, cut the branch per the repo's convention (typically
 `<prefix>/<id>-<slug>`, `bug→fix · feature→feat · task→task · chore→chore`):
