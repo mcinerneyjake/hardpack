@@ -12,6 +12,7 @@ import { sweep, testBlocks, screenBlock, assertInstruments, controlFailures, CON
 import { readEvents } from './events.js';
 import { handleToolCall } from '../mcp/handlers.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
+import { holdTestRun, releaseTestRun, TEST_RUN_GLOBAL_SETUP, type Registry } from 'ticket-workflow/test-run';
 
 // Contract tests for the PINNED ticket-workflow build, driven through hardpack's shim.
 //
@@ -559,5 +560,47 @@ describe('pinned ticket-workflow build: summarize() output is enum-driven', () =
     const stamps = s.recentlyUpdated.map((r) => r.updated);
     expect(stamps).toEqual([...stamps].sort().reverse());
     expect(stamps[0]).toBe('2026-02-12T00:00:00.000Z');
+  });
+});
+
+// vitest.config.test.ts imports vitest.config.ts inside a worker, which is safe only while the worker
+// skip holds; a tag that narrowed it would take a nested slot on every run with nothing red.
+describe('pinned ticket-workflow build: test-run hold', () => {
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+  const scratch = (): { stateDir: string; tmpRoot: string; registry: Registry } => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pkg-test-run-'));
+    roots.push(root);
+    let pending: ReturnType<Registry['get']>;
+    return {
+      stateDir: path.join(root, 'slots'),
+      tmpRoot: path.join(root, 'tmp'),
+      registry: { get: () => pending, set: (p) => { pending = p; } },
+    };
+  };
+
+  it('skips inside a vitest worker and takes nothing', async () => {
+    const s = scratch();
+    const env: NodeJS.ProcessEnv = { VITEST_WORKER_ID: '1' };
+    expect(await holdTestRun({ ...s, env, slots: 1, waitMs: 0 })).toEqual({ kind: 'skipped', reason: 'worker' });
+    expect(existsSync(s.stateDir)).toBe(false);
+    expect(env.TMPDIR).toBeUndefined();
+  });
+
+  it('holds outside a worker, and releases idempotently (the control for the skip)', async () => {
+    const s = scratch();
+    const env: NodeJS.ProcessEnv = {};
+    const out = await holdTestRun({ ...s, env, slots: 1, waitMs: 0, log: () => {}, registerExit: () => {} });
+    expect(out.kind).toBe('held');
+    expect(env.TMPDIR).toBe(out.kind === 'held' ? out.tmpDir : 'unreachable');
+    await releaseTestRun(s.registry);
+    await releaseTestRun(s.registry);
+    expect(existsSync(env.TMPDIR ?? '')).toBe(false);
+  });
+
+  it('ships the globalSetup vitest.config.ts wires', () => {
+    expect(existsSync(TEST_RUN_GLOBAL_SETUP)).toBe(true);
   });
 });

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import picomatch from 'picomatch';
 
+import { TEST_RUN_GLOBAL_SETUP } from 'ticket-workflow/test-run';
 import { describe, it, expect } from 'vitest';
 import config, { COVERAGE_EMPTY_BY_DESIGN } from './vitest.config.js';
 
@@ -17,6 +18,7 @@ import config, { COVERAGE_EMPTY_BY_DESIGN } from './vitest.config.js';
 
 type ProjectTest = {
   name?: string;
+  globalSetup?: string | string[];
   include?: string[];
   exclude?: string[];
   testTimeout?: number;
@@ -86,6 +88,18 @@ describe('every project keeps the embedding-cache pin', () => {
   // corpus — destroying a developer's warm cache (test-support/vitest.setup.ts).
   it.each(['inproc', 'subproc'])('project %s loads the setup file', (name) => {
     expect(projectNamed(name).setupFiles).toContain('./test-support/vitest.setup.ts');
+  });
+});
+
+// Shape only: that vitest runs the ROOT's globalSetup under a projects split was measured on
+// tkt-7bb0ed6b14e3, and nothing here re-checks it.
+describe('the test-run slot release is wired at the root, once', () => {
+  it('releases from the root test block', () => {
+    expect(config.test?.globalSetup).toEqual([TEST_RUN_GLOBAL_SETUP]);
+  });
+
+  it.each(['inproc', 'subproc'])('project %s does not restate globalSetup', (name) => {
+    expect(projectNamed(name).globalSetup).toBeUndefined();
   });
 });
 

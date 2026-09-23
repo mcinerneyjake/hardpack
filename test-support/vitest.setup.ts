@@ -9,8 +9,8 @@ import path from 'node:path';
 //
 // Keyed by pid, NOT mkdtemp: vitest evaluates setupFiles once per TEST FILE, so mkdtemp would
 // mint a fresh directory for every one of the ~87 suites and leak them all (nothing here can
-// register a cleanup hook that outlives the file). One deterministic dir per worker process is
-// reused across that worker's files and stays a single bounded artifact.
+// register a cleanup hook that outlives the file). It lands in holdTestRun's per-run TMPDIR and dies
+// with the run (tkt-f93e25bdfbcd); in CI, where no hold is taken, one dir per worker per run leaks.
 const dir = path.join(os.tmpdir(), `kanban-embed-cache-${process.pid}`);
 fs.mkdirSync(dir, { recursive: true });
 process.env.EMBED_CACHE_PATH = path.join(dir, 'embeddings.json');
