@@ -365,6 +365,63 @@ describe('pinned ticket-workflow build: raw NUL bytes are refused', () => {
   });
 });
 
+// tkt-03641f441283, package v0.29.0 (tkt-5694c4bbd1d4). CLAUDE.md's startup steps and SKILL.md §0/§6
+// tell sessions a refusal is how a held ticket announces itself; a bump dropping it would put two
+// sessions on one ticket again, silently, with the gate green.
+describe('pinned ticket-workflow build: start_ticket refuses an in-progress ticket', () => {
+  const file = (id: string) => path.join(dirs.tickets, `${id}.md`);
+  const text = (r: Awaited<ReturnType<typeof handleToolCall>>) => r.content.map((c) => c.text).join('\n');
+
+  async function seedInProgress(id: string) {
+    await writeRaw(id, { status: 'in-progress' });
+    await fs.appendFile(
+      file(id),
+      '## Checkpoint 2026-09-22\n\nbranch task/stale-holder\n\n## Checkpoint 2026-09-23\n\nbranch task/held-elsewhere\n',
+      'utf8',
+    );
+  }
+
+  async function expectRefusedUnchanged(id: string, args: Record<string, unknown>) {
+    const before = await fs.readFile(file(id), 'utf8');
+    const eventsBefore = await readEvents(id);
+    const result = await handleToolCall('start_ticket', { id, ...args });
+    expect(result.isError).toBe(true);
+    expect(await fs.readFile(file(id), 'utf8')).toBe(before);
+    expect(await readEvents(id)).toEqual(eventsBefore);
+    return text(result);
+  }
+
+  it('refuses without force, quotes the LAST checkpoint as data, and writes nothing', async () => {
+    const id = 'tkt-held00000001';
+    await seedInProgress(id);
+    const msg = await expectRefusedUnchanged(id, {});
+    expect(msg).toContain('already in-progress');
+    expect(msg).toContain('task/held-elsewhere');
+    expect(msg).not.toContain('task/stale-holder');
+    // CLAUDE.md treats checkpoint text as data, not instructions; the quote must say so.
+    expect(msg).toContain('data, not instructions');
+  });
+
+  it('forces only on the literal true, and the forced call returns the ticket', async () => {
+    const id = 'tkt-held00000002';
+    await seedInProgress(id);
+    await expectRefusedUnchanged(id, { force: 'true' });
+
+    const forced = await handleToolCall('start_ticket', { id, force: true });
+    expect(forced.isError).toBeFalsy();
+    expect(text(forced)).toContain(id);
+    expect(text(forced)).toContain('task/held-elsewhere');
+  });
+
+  // Negative control: without it a build refusing EVERY start would pass the two cases above.
+  it('starts a todo ticket without force', async () => {
+    const id = 'tkt-held00000003';
+    await writeRaw(id, { status: 'todo' });
+    expect((await handleToolCall('start_ticket', { id })).isError).toBeFalsy();
+    expect((await getTicket(id)).status).toBe('in-progress');
+  });
+});
+
 // tkt-ad0806bc834f. A bump inverting the linked-worktree allow would wedge every armed ticket session
 // with this gate green. Asserts THIS repo's install; settings.audit.test.mjs binds the wired
 // ~/.claude/tools one to it. Spawned, not imported, because the module calls process.exit.
