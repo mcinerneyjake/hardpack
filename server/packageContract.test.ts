@@ -651,10 +651,14 @@ describe('pinned ticket-workflow build: test-run hold', () => {
     const env: NodeJS.ProcessEnv = {};
     const out = await holdTestRun({ ...s, env, slots: 1, waitMs: 0, log: () => {}, registerExit: () => {} });
     expect(out.kind).toBe('held');
-    expect(env.TMPDIR).toBe(out.kind === 'held' ? out.tmpDir : 'unreachable');
+    const tmpDir = out.kind === 'held' ? out.tmpDir : 'unreachable';
+    expect(env.TMPDIR).toBe(tmpDir);
+    expect(existsSync(tmpDir)).toBe(true);
     await releaseTestRun(s.registry);
     await releaseTestRun(s.registry);
-    expect(existsSync(env.TMPDIR ?? '')).toBe(false);
+    // From v0.29.1 release restores TMPDIR, so the run dir must be checked by its own path.
+    expect(existsSync(tmpDir)).toBe(false);
+    expect(env.TMPDIR).toBeUndefined();
   });
 
   it('ships the globalSetup vitest.config.ts wires', () => {
