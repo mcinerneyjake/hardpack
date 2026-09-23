@@ -2,7 +2,16 @@ import { defineConfig, devices } from 'playwright/test';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { holdTestRun } from 'ticket-workflow/test-run';
 import { webBaseUrl } from './shared/ports.js';
+
+// Workers and --ui/watch loader processes re-evaluate this file and inherit env; holdTestRun skips
+// only vitest's workers, so a descendant of the holder must not claim a second slot (tkt-7bb0ed6b14e3).
+const holder = process.env.HARDPACK_E2E_SLOT_HOLDER;
+if (holder === undefined || holder === String(process.pid)) {
+  await holdTestRun({ repo: 'hardpack-e2e' });
+  process.env.HARDPACK_E2E_SLOT_HOLDER = String(process.pid);
+}
 
 // The specs create and delete tickets through the UI. Point the dev server at
 // throwaway temp dirs so a run never mutates the real tickets/ or events/ dirs

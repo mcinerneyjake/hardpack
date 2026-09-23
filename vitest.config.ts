@@ -1,5 +1,9 @@
 import { availableParallelism } from 'node:os';
+import { holdTestRun, TEST_RUN_GLOBAL_SETUP } from 'ticket-workflow/test-run';
 import { defineConfig } from 'vitest/config';
+
+// Machine-wide run slot + per-run TMPDIR, before vitest snapshots worker env (tkt-7bb0ed6b14e3).
+await holdTestRun({ repo: 'hardpack' });
 
 // The suites that drive real subprocesses (git commits through the guard hooks, the probe CLIs,
 // the terminal setup scripts). They are split into their own project so they can run at a
@@ -102,6 +106,8 @@ export const COVERAGE_EMPTY_BY_DESIGN: Record<string, string> = {
 export default defineConfig({
   test: {
     ...SHARED,
+    // Not restated per project: vitest runs the root's globalSetup under a projects split (measured).
+    globalSetup: [TEST_RUN_GLOBAL_SETUP],
     projects: [
       {
         test: {
