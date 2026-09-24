@@ -1,5 +1,6 @@
 import { availableParallelism } from 'node:os';
-import { holdTestRun, TEST_RUN_GLOBAL_SETUP } from 'ticket-workflow/test-run';
+import { isAgent } from 'std-env';
+import { holdTestRun, TEST_RUN_GLOBAL_SETUP, TestRunSlotReporter } from 'ticket-workflow/test-run';
 import { defineConfig } from 'vitest/config';
 
 // Machine-wide run slot + per-run TMPDIR, before vitest snapshots worker env (tkt-7bb0ed6b14e3).
@@ -103,11 +104,26 @@ export const COVERAGE_EMPTY_BY_DESIGN: Record<string, string> = {
     'server/app.ts and server/archiveScheduler.ts.',
 };
 
+// Naming a reporter opts OUT of vitest's defaults rather than adding to them, and the branch that
+// skips (`!resolved.reporters.length`) picks BOTH the primary reporter AND, on CI, `github-actions`
+// — whose loss silently stops inline PR failure annotations. Derived from the same two inputs vitest
+// reads rather than transcribed, so it cannot drift from them (tkt-52f95f9f4a9a).
+export function vitestDefaultReporters(
+  env: NodeJS.ProcessEnv = process.env,
+  agent: boolean = isAgent,
+): string[] {
+  return [agent ? 'agent' : 'default', ...(env.GITHUB_ACTIONS === 'true' ? ['github-actions'] : [])];
+}
+
 export default defineConfig({
   test: {
     ...SHARED,
     // Not restated per project: vitest runs the root's globalSetup under a projects split (measured).
     globalSetup: [TEST_RUN_GLOBAL_SETUP],
+    // `holdTestRun` runs once at config resolution and the teardown above only fires as the process
+    // exits, so without this reporter a `test:watch` session pins a machine-wide slot while idle
+    // (tkt-52f95f9f4a9a). No-op under `vitest run` — the globalSetup release still owns that path.
+    reporters: [...vitestDefaultReporters(), new TestRunSlotReporter({ repo: 'hardpack' })],
     projects: [
       {
         test: {
