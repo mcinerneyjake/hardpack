@@ -3,9 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import picomatch from 'picomatch';
 
-import { TEST_RUN_GLOBAL_SETUP } from 'ticket-workflow/test-run';
+import { TEST_RUN_GLOBAL_SETUP, TestRunSlotReporter } from 'ticket-workflow/test-run';
 import { describe, it, expect } from 'vitest';
-import config, { COVERAGE_EMPTY_BY_DESIGN } from './vitest.config.js';
+import config, { COVERAGE_EMPTY_BY_DESIGN, vitestDefaultReporters } from './vitest.config.js';
 
 // Pins the collection excludes and the subprocess worker cap (the .claude/settings.audit.test.mjs
 // precedent: audit the config that nothing else would catch drifting). Deleting the worktrees glob
@@ -42,6 +42,14 @@ function projectNamed(name: string): ProjectTest {
   const found = projectConfigs().find((p) => p.name === name);
   if (!found) throw new Error(`no vitest project named "${name}" — the split was renamed or removed`);
   return found;
+}
+
+// Throws rather than returning an empty array: a soft fallback would make every reporter assertion
+// below pass vacuously the moment the registration was reshaped.
+function rootReporters() {
+  const { reporters } = config.test ?? {};
+  if (!Array.isArray(reporters)) throw new Error('root test.reporters is not an array — the reporter registration was removed or reshaped');
+  return reporters;
 }
 
 describe('vitest projects', () => {
@@ -100,6 +108,48 @@ describe('the test-run slot release is wired at the root, once', () => {
 
   it.each(['inproc', 'subproc'])('project %s does not restate globalSetup', (name) => {
     expect(projectNamed(name).globalSetup).toBeUndefined();
+  });
+});
+
+// The release above fires at globalSetup teardown, which under watch only runs as the process exits.
+// So without the reporter a watcher pins a machine-wide slot while idle, and two watchers exhaust
+// the default pool of two — measured both arms on tkt-52f95f9f4a9a.
+describe('the watch-mode slot re-acquire is wired at the root, once', () => {
+  it('registers the slot reporter on the root test block', () => {
+    expect(rootReporters().some((r) => r instanceof TestRunSlotReporter)).toBe(true);
+  });
+
+  // Opting into `reporters` suppresses the whole branch vitest uses to pick its own, so a reporter
+  // it would have added is lost in silence — `github-actions` among them, which is what annotates
+  // failures inline on the PR diff (measured both arms under GITHUB_ACTIONS=true).
+  it('keeps every reporter vitest would have chosen for itself', () => {
+    const expected = vitestDefaultReporters();
+    // Pinned, or an empty list would satisfy the loop below without asserting anything — the exact
+    // shape in which this regression would hide.
+    expect(expected.length).toBeGreaterThan(0);
+    for (const name of expected) expect(rootReporters()).toContain(name);
+  });
+
+  // A SINGULAR `reporter` key is treated as a CLI override and REPLACES `reporters` wholesale
+  // (vitest 4.1 resolveConfig), silently discarding the slot reporter and restoring the very bug
+  // this block guards — while every assertion above stays green, since they read the authored
+  // object. Same class as the `maxWorker:` near-miss rejected below.
+  it('carries no singular `reporter` key, which would replace the array wholesale', () => {
+    expect(Object.hasOwn(config.test ?? {}, 'reporter')).toBe(false);
+  });
+});
+
+// The composition above is only as good as this, and the CI branch cannot be read off the resolved
+// config: it is decided at import time from the ambient env, and re-importing the config to vary it
+// would re-run `holdTestRun` and take a second machine-wide slot from inside the suite.
+describe('vitestDefaultReporters mirrors vitest’s own selection', () => {
+  it('adds github-actions only when running on GitHub Actions', () => {
+    expect(vitestDefaultReporters({ GITHUB_ACTIONS: 'true' }, false)).toEqual(['default', 'github-actions']);
+    expect(vitestDefaultReporters({}, false)).toEqual(['default']);
+  });
+
+  it('prefers the agent reporter when vitest would', () => {
+    expect(vitestDefaultReporters({}, true)).toEqual(['agent']);
   });
 });
 
