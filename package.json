@@ -16,6 +16,7 @@
     "agent:record": "tsx agent/recordRun.ts",
     "retro": "tsx agent/retro/cli.ts",
     "eval:retrieval": "tsx agent/eval/retrievalEval.ts",
+    "eval:coding": "tsx agent/eval/coding/cli.ts",
     "terminal:clean": "tsx scripts/terminal-clean.ts",
     "ticket": "tsx scripts/ticket.ts",
     "night": "node scripts/night-run.mjs",
