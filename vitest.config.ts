@@ -39,6 +39,7 @@ const SUBPROCESS_SUITES = [
   'scripts/terminal-setup-cred.test.mjs',
   'scripts/terminal-setup-github.test.mjs',
   'server/packageContract.test.ts',
+  'test-support/vitest.setup.test.ts',
 ];
 
 // Measured, four concurrent runs on 14 cores (tkt-d5957c036ff8): uncapped 26-32 timeouts, 4 at
