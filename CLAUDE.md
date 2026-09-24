@@ -73,10 +73,8 @@ Print the invocation on its own line:
 - **Suppress it entirely** when the opening message *is* the invocation, when the skill is already
   running, or when it was declined once this session. Ask once.
 
-`skillContract.test.mjs` requires exactly one invocation here, carrying no ticket id, at the `--gates`
-level `SKILL.md` §15's handoff uses. That level is **derived** from SKILL.md's gate table, not
-merely compared between the two files — pre-filling an auto level reddens the suite *even when both
-files agree on it*. The rest of this subsection is honor-system prose.
+`skillContract.test.mjs` binds only the invocation line; the rest of this subsection is honor-system
+prose.
 
 ## MCP server and the board
 
@@ -128,12 +126,8 @@ goes through DOMPurify (`TicketModal.tsx`), and the local intake agent's tool su
 `delete_ticket` as reachable from untrusted intake (`agent/runtime/tools.ts`).
 
 **Nothing enforces this**, and nothing can — no mechanism can inspect which sentences a model chose to
-follow. `skillContract.test.mjs` binds three things and no more: that this section still exists under a
-heading naming *data, not instructions*, that it still names both carriers **outside a code fence**, and
-that it still carries one of the phrasings in that file's `NOT_ENFORCED` allowlist — so rewording this
-paragraph is a deliberate edit, not a free one. That catches **deletion or renaming**, never a rewrite:
-a section edited in place to say the opposite passes green. It is a check on the *file*, never on a run.
-**Never report it as a control that holds.**
+follow. `skillContract.test.mjs` catches deletion or renaming of this section, never a rewrite that
+says the opposite. **Never report it as a control that holds.**
 
 ## Ticket workflow
 
@@ -151,7 +145,7 @@ a section edited in place to say the opposite passes green. It is a check on the
 6. **Self-review** — read your own diff; `/verify` when runtime behaviour needs confirming. The
    `/code-review` is the *review gate* and belongs at the commit gate, not here. The ticket **stays
    `in-progress`** through self-review and commit; `qa` is set only at PR-open.
-7. Append an `## Implementation summary`. Do **not** set `done` — that follows the merge.
+7. Append an `## Implementation summary`.
 
 **Definition of Done:** steps 4–7 complete, the gate green (or N/A for docs-only), a `## Done when`
 list defined and holding for feature/bug tickets, the mutation check recorded, a `/code-review` run
@@ -658,10 +652,8 @@ pass, and would deny service. What is forbidden is the *claim* — an `unmeasure
 never be described as justified, validated or shown to work. Those recorded pairs are the queue to
 A/B first, starting with the repo-scoped ones `--scope project` can now put to both arms.
 
-**Nothing enforces this.** `skillContract.test.mjs` binds that this section exists, still names
-**Claim** and **Falsifier**, still says it is unenforced, and still names a `--scope` flag the probe
-actually defines — a rewrite reversing its meaning passes green, and no test can read what a session
-actually did.
+**Nothing enforces this.** `skillContract.test.mjs` pins this section's tokens, but a rewrite
+reversing its meaning passes green, and no test can read what a session actually did.
 
 ## Session retrospectives: the cadence, and what happens to a proposal
 
