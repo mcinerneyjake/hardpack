@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -659,6 +659,10 @@ describe('pinned ticket-workflow build: test-run hold', () => {
     // From v0.29.1 release restores TMPDIR, so the run dir must be checked by its own path.
     expect(existsSync(tmpDir)).toBe(false);
     expect(env.TMPDIR).toBeUndefined();
+    // v0.29.2 gave releaseSlot a token clause, so release can now refuse a record this process wrote.
+    // Neither assertion above can see that: both run whatever the outcome, and `log` is stubbed here.
+    // Unasserted, a regression leaks a slot from the machine-wide pool on every hardpack test run.
+    expect(readdirSync(s.stateDir)).toEqual([]);
   });
 
   it('ships the globalSetup vitest.config.ts wires', () => {

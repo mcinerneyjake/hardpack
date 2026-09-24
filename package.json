@@ -48,7 +48,7 @@
     "node-pty": "^1.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "ticket-workflow": "github:mcinerneyjake/ticket-workflow#v0.29.1",
+    "ticket-workflow": "github:mcinerneyjake/ticket-workflow#v0.29.2",
     "ws": "^8.21.3",
     "zod": "^4.5.4"
   },
