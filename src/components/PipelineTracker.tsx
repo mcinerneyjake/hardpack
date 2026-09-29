@@ -53,13 +53,14 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
           const { awaiting, reviewed, showCheck, clickable } = n;
           const isReview = n.key === 'review';
           const nodeClass = awaiting ? 'is-awaiting-review' : `is-${n.state}`;
-          const title = isReview
+          const title = n.state === 'failed' ? 'Failed'
+            : n.state === 'unattributed' ? 'Outcome unknown: not verified since a command it was in failed or could not start'
+            : isReview
             ? (reviewed ? 'Reviewed'
               : awaiting ? 'Confirm your review'
               : n.state === 'skipped' ? 'Review skipped' : 'Awaiting the gate')
             // A status-derived node (e.g. Started) is `reached` with no timestamp — Done, not Pending.
             : n.state === 'skipped' ? 'Skipped'
-              : n.state === 'failed' ? 'Failed'
               : n.at ? formatTime(n.at)
               : n.state === 'reached' || n.state === 'passed' ? 'Done'
               : n.state === 'active' ? 'In progress'

@@ -14,7 +14,7 @@ const DISPLAY: readonly DisplayGroup[] = [
 ];
 
 // Adds 'active' (the node being worked toward, only while in-progress) and 'skipped' (a node before the furthest-reached milestone that never registered — rendered skipped, not pending, to keep the pipeline monotonic).
-export type NodeState = 'pending' | 'reached' | 'passed' | 'failed' | 'active' | 'skipped'
+export type NodeState = 'pending' | 'reached' | 'passed' | 'failed' | 'unattributed' | 'active' | 'skipped'
 
 export interface TrackerNode {
   key: string
@@ -63,14 +63,14 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
   }
 
   const failedStep = STEPS.find((s) => stepState.get(s.id) === 'failed');
-  const failed = failedStep !== undefined;
-  const live = status === 'in-progress' && !failed;
 
   const groups = DISPLAY.map((g) => {
     const states = g.steps.map((st) => stepState.get(st) ?? 'pending');
     const groupFailed = states.some((s) => s === 'failed');
     const allComplete = states.every(isComplete);
+    // Outcome unknown (a failed chain, or a step that could not start): not a failure, and not never-run.
     const state: NodeState = groupFailed ? 'failed'
+      : states.some((s) => s === 'unattributed') ? 'unattributed'
       : allComplete ? (states.some((s) => s === 'passed') ? 'passed' : 'reached')
       : 'pending';
     const at = g.steps.reduce<string | null>((acc, st) => {
@@ -81,6 +81,9 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
     return { key: g.key, label: g.label, state, at, started };
   });
 
+  const failed = failedStep !== undefined;
+  const live = status === 'in-progress' && !failed;
+
   // Frontier = next incomplete group past the furthest complete one, so a stale never-emitted early step doesn't trap the pulse behind it.
   let lastDoneIdx = -1;
   groups.forEach((g, i) => { if (isComplete(g.state)) lastDoneIdx = i; });
@@ -88,7 +91,8 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
 
   const nodes: TrackerNode[] = groups.map((g, i) => {
     let state: NodeState = g.state;
-    if (i === activeIdx) state = 'active';
+    if (g.state === 'unattributed') state = 'unattributed';
+    else if (i === activeIdx) state = 'active';
     // A pending node before the furthest-reached one was passed over — show skipped, not pending (monotonic).
     else if (g.state === 'pending' && i < lastDoneIdx) state = 'skipped';
     // awaiting is true ONLY when Review is the active frontier — not merely because the ticket is in-progress; once complete it locks.
@@ -112,7 +116,7 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
 
 // Current-phase label. Special case: between branch and a not-started gate, the agent is writing code — the "Implementing…" gap with no event of its own.
 function currentLabel(
-  groups: { key: string; label: string; started: boolean }[],
+  groups: { key: string; label: string; state: NodeState; started: boolean }[],
   status: StatusId,
   lastDoneIdx: number,
   activeIdx: number,
@@ -124,6 +128,7 @@ function currentLabel(
   // in-progress guarantees a status-derived started, so a completed group precedes the frontier — prev is defined.
   const prev = lastDoneIdx >= 0 ? groups[lastDoneIdx] : undefined;
   const active = groups[activeIdx];
+  if (active.state === 'unattributed') return `${active.label}: outcome unknown`;
   if (prev?.key === 'branch' && active.key === 'gate' && !active.started) return 'Implementing…';
   return active.label;
 }

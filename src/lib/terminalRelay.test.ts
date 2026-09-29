@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { isTicketEventsResponse, statusFromPipeline } from './terminalRelay.js';
 import { pipelineView } from './pipelineView.js';
-import { STEPS, type PipelineStep } from '../../shared/constants.js';
+import { PIPELINE_STEPS, type PipelineStep } from '../../shared/constants.js';
 
 const step = (over: Partial<PipelineStep> = {}): PipelineStep =>
   ({ step: 'commit', label: 'Commit', state: 'passed', at: '2026-07-22T10:00:00.000Z', ...over });
@@ -36,6 +36,16 @@ describe('isTicketEventsResponse', () => {
 
   it('accepts the telemetry provenance marker on an event', () => {
     const events = [{ ticketId: 'tkt-abc', step: 'commit', state: 'passed', at: '2026-07-22T10:00:00.000Z', outcomeFrom: 'event' }];
+    expect(isTicketEventsResponse(response({ events }))).toBe(true);
+  });
+
+  // v0.30.0 rows: a mirror lagging the package rejects the whole payload and the strip goes blank.
+  it('accepts an unattributed gate row and an archived milestone', () => {
+    const at = '2026-09-29T10:00:00.000Z';
+    const events = [
+      { ticketId: 'tkt-abc', step: 'test', state: 'unattributed', at, source: 'hook' },
+      { ticketId: 'tkt-abc', step: 'archived', state: 'reached', at, source: 'engine' },
+    ];
     expect(isTicketEventsResponse(response({ events }))).toBe(true);
   });
 
@@ -129,7 +139,7 @@ describe('statusFromPipeline', () => {
 // pipelineView treats Started as implicitly complete, which is what moves the active frontier.
 describe('statusFromPipeline → pipelineView', () => {
   const allPending = (): PipelineStep[] =>
-    STEPS.map((s) => ({ step: s.id, label: s.label, state: 'pending', at: null }));
+    PIPELINE_STEPS.map((s) => ({ step: s.id, label: s.label, state: 'pending', at: null }));
 
   it('shows no phase on a never-worked ticket (must not read "Branch")', () => {
     const pipeline = allPending();

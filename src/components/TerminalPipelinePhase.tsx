@@ -34,7 +34,7 @@ export default function TerminalPipelinePhase({ ticketId, minimized, onStartShel
   const view = pipelineView(valid.pipeline, status);
   if (!view.started) return null;
 
-  // view.current carries the live phase word (and "<Step> failed"), but only while in-progress.
+  // view.current carries the live phase label ("<Step> failed", "<Group>: outcome unknown"), but only while in-progress.
   const label = status === 'done' ? 'Done' : status === 'qa' ? 'QA' : view.current;
   if (!label) return null;
 
