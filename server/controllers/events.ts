@@ -19,6 +19,7 @@ export async function review(req: Request, res: Response, input: ReviewRequest):
     ticketId: id,
     step: 'review',
     state: 'reached',
+    source: 'web',
     ...(reviewed ? {} : { detail: REVIEW_CLEARED }),
   });
   res.json(await getTicketEvents(id));

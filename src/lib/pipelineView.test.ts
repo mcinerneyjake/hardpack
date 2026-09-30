@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { pipelineView } from './pipelineView.js';
-import { STEPS, type PipelineStep } from '../../shared/constants.js';
+import { PIPELINE_STEPS, type PipelineStep } from '../../shared/constants.js';
 
 // Build a full canonical pipeline, overriding the given steps' states.
 function build(states: Partial<Record<PipelineStep['step'], PipelineStep['state']>>): PipelineStep[] {
-  return STEPS.map((s) => ({
+  return PIPELINE_STEPS.map((s) => ({
     step: s.id,
     label: s.label,
     state: states[s.id] ?? 'pending',
@@ -95,9 +95,41 @@ describe('pipelineView — grouping, status derivation, review gate', () => {
     expect(v.nodes.some((n) => n.state === 'active')).toBe(false);
   });
 
+  // Unattributed = outcome unknown (a failed chain, or a step that could not start): never
+  // never-run, never skipped, and never an accusation of failure.
+  it('shows an unattributed gate chain as outcome unknown, not as failed or never-run', () => {
+    const v = pipelineView(build({ branch: 'passed', typecheck: 'unattributed', lint: 'unattributed', test: 'unattributed' }), 'in-progress');
+    expect(v.failed).toBe(false);
+    expect(stateOf(v, 'gate')).toBe('unattributed');
+    expect(v.current).toBe('Gate: outcome unknown');
+  });
+
+  it('keeps an unattributed gate visible, never skipped, while later milestones move the frontier on', () => {
+    const v = pipelineView(
+      build({ branch: 'passed', typecheck: 'unattributed', lint: 'unattributed', test: 'passed', review: 'reached', commit: 'passed' }),
+      'in-progress',
+    );
+    expect(stateOf(v, 'gate')).toBe('unattributed');
+    expect(v.failed).toBe(false);
+    expect(stateOf(v, 'pr_opened')).toBe('active');
+    expect(v.current).toBe('PR');
+  });
+
+  it('does not flag a qa ticket as failed over a lingering unattributed step', () => {
+    const v = pipelineView(build({ branch: 'passed', typecheck: 'unattributed', lint: 'passed', test: 'passed', commit: 'passed' }), 'qa');
+    expect(v.failed).toBe(false);
+    expect(stateOf(v, 'gate')).toBe('unattributed');
+  });
+
+  it('names the failed step over an unattributed one when both are present', () => {
+    const v = pipelineView(build({ branch: 'passed', typecheck: 'passed', lint: 'failed', test: 'unattributed' }), 'in-progress');
+    expect(stateOf(v, 'gate')).toBe('failed');
+    expect(v.current).toBe('Lint failed');
+  });
+
   it('shows a fully completed pipeline with no active node when done', () => {
     const all: Partial<Record<PipelineStep['step'], PipelineStep['state']>> = {};
-    for (const s of STEPS) all[s.id] = s.id === 'review' ? 'reached' : 'passed';
+    for (const s of PIPELINE_STEPS) all[s.id] = s.id === 'review' ? 'reached' : 'passed';
     const v = pipelineView(build(all), 'done');
     expect(v.current).toBeNull();
     expect(v.progress).toEqual({ done: TOTAL, total: TOTAL });
@@ -151,7 +183,7 @@ describe('pipelineView — review-gate interactivity flags', () => {
 
   it('never clickable outside in-progress, even when reviewed (qa/done)', () => {
     const all: Partial<Record<PipelineStep['step'], PipelineStep['state']>> = {};
-    for (const s of STEPS) all[s.id] = s.id === 'review' ? 'reached' : 'passed';
+    for (const s of PIPELINE_STEPS) all[s.id] = s.id === 'review' ? 'reached' : 'passed';
     for (const status of ['qa', 'done'] as const) {
       const n = review(pipelineView(build(all), status));
       expect(n.reviewed).toBe(true);   // it WAS reviewed

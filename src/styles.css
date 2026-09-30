@@ -1136,6 +1136,9 @@ body {
 .tracker-node.is-active .tracker-label { color: var(--text); font-weight: 600; }
 .tracker-node.is-failed .tracker-dot { background: var(--danger); border-color: var(--danger); }
 .tracker-node.is-failed .tracker-label { color: var(--danger); }
+/* unattributed: outcome unknown, not a failure, so amber rather than danger. */
+.tracker-node.is-unattributed .tracker-dot { background: var(--prio-medium); border-color: var(--prio-medium); }
+.tracker-node.is-unattributed .tracker-label { color: var(--prio-medium); }
 /* skipped: a node the pipeline passed without recording (docs-only gate, etc.) —
    hollow dashed + muted, on the green connector so the pipeline reads monotonic. */
 .tracker-node.is-skipped .tracker-dot { background: var(--card-bg); border-style: dashed; border-color: var(--muted); }
@@ -1197,6 +1200,7 @@ body {
 .tracker-log-row.is-reached .tracker-log-state,
 .tracker-log-row.is-passed .tracker-log-state { color: var(--st-done); }
 .tracker-log-row.is-failed .tracker-log-state { color: var(--danger); }
+.tracker-log-row.is-unattributed .tracker-log-state { color: var(--prio-medium); }
 .tracker-log-row.is-cleared .tracker-log-state { color: var(--muted); font-style: italic; }
 
 /* Board-card glance indicator (in-progress cards only) */

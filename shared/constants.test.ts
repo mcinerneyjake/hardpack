@@ -75,8 +75,10 @@ describe('shared-constant parity with the ticket-workflow package', () => {
     ['SOURCES', local.SOURCES, pkg.SOURCES],
     ['STEPS', local.STEPS, pkg.STEPS],
     ['STEP_IDS', local.STEP_IDS, pkg.STEP_IDS],
+    ['PIPELINE_STEPS', local.PIPELINE_STEPS, pkg.PIPELINE_STEPS],
     ['STEP_STATES', local.STEP_STATES, pkg.STEP_STATES],
     ['STATUS_STEP', local.STATUS_STEP, pkg.STATUS_STEP],
+    ['EVENT_SOURCES', local.EVENT_SOURCES, pkg.EVENT_SOURCES],
   ];
 
   // Probe discipline: a parametrized loop over an empty table passes vacuously — a green check that
@@ -112,6 +114,8 @@ describe('shared-constant parity with the ticket-workflow package', () => {
     // Listed exhaustively rather than spot-checked: this list is the mechanism, so a type left off
     // it is a silent hole, and the dashboard types sit behind the identical `res.json(pkg object)`
     // shape that just failed for telemetry.
+    expectTypeOf<local.EventSourceId>().toEqualTypeOf<pkg.EventSourceId>();
+    expectTypeOf<local.TestCounts>().toEqualTypeOf<pkg.TestCounts>();
     expectTypeOf<local.TicketEvent>().toEqualTypeOf<pkg.TicketEvent>();
     expectTypeOf<local.PipelineStep>().toEqualTypeOf<pkg.PipelineStep>();
     expectTypeOf<local.TicketEventsResponse>().toEqualTypeOf<pkg.TicketEventsResponse>();

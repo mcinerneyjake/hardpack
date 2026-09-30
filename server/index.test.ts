@@ -1397,6 +1397,14 @@ describe('POST /api/tickets/:id/review', () => {
     expect(res.body.events.filter((e: { step: string }) => e.step === 'review')).toHaveLength(2);
   });
 
+  it('labels both the review and the un-review as web writes', async () => {
+    await seedTicket('tkt-rev');
+    await request(server).post('/api/tickets/tkt-rev/review').send({ reviewed: true });
+    const res = await request(server).post('/api/tickets/tkt-rev/review').send({ reviewed: false });
+    const rows = res.body.events.filter((e: { step: string }) => e.step === 'review');
+    expect(rows.map((e: { source?: string }) => e.source)).toEqual(['web', 'web']);
+  });
+
   it('defaults to reviewed when no body is sent', async () => {
     await seedTicket('tkt-rev');
     const res = await request(server).post('/api/tickets/tkt-rev/review');

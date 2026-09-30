@@ -107,7 +107,7 @@ export type PriorityCount = { priority: Priority; count: number }
 
 // --- Workflow-step telemetry ----------------------------------------------
 // Ordered milestones a ticket passes through. Shared so emitters + reader can't drift (tkt-512f9b15ddb8).
-// Split: started/qa/done are STATUS transitions (updateTicket); the rest are shell commands (PostToolUse hook).
+// Split: started/qa/done/archived are STATUS transitions (updateTicket, archive sweep); the rest are shell commands (PostToolUse hook).
 
 export const STEPS = [
   { id: 'started', label: 'Started' },
@@ -120,13 +120,18 @@ export const STEPS = [
   { id: 'pr_opened', label: 'PR opened' },
   { id: 'qa', label: 'QA' },
   { id: 'done', label: 'Done' },
+  { id: 'archived', label: 'Archived' },
 ] as const;
 
 export const STEP_IDS = STEPS.map((s) => s.id);
 export type StepId = (typeof STEPS)[number]['id']
 
-// reached = status milestone hit (no pass/fail); passed/failed = command milestone, per the hook event.
-export const STEP_STATES = ['reached', 'passed', 'failed'] as const;
+// The stages the server's reduced pipeline carries: `archived` is a logged end state, not a stage.
+export const PIPELINE_STEPS = STEPS.filter((s) => s.id !== 'archived');
+
+// reached = status milestone hit (no pass/fail); passed/failed = command milestone, per the hook event;
+// unattributed = outcome unknown: a failed command that could not name its link, or a step `gate` could not start.
+export const STEP_STATES = ['reached', 'passed', 'failed', 'unattributed'] as const;
 export type StepState = (typeof STEP_STATES)[number]
 
 // Status transitions that map to a tracked milestone; others emit nothing.
@@ -134,18 +139,30 @@ export const STATUS_STEP: Partial<Record<StatusId, StepId>> = {
   'in-progress': 'started',
   qa: 'qa',
   done: 'done',
+  // Its own step, never `done`: archive_ticket retires abandoned work too.
+  archived: 'archived',
 };
+
+// Which writer appended a row — a label the writer sets, not an attestation.
+export const EVENT_SOURCES = ['engine', 'review', 'web', 'hook', 'gate'] as const;
+export type EventSourceId = (typeof EVENT_SOURCES)[number]
 
 export type TicketEvent = {
   ticketId: string
   step: StepId
   state: StepState
   at: string
+  source?: EventSourceId // absent from a pre-v0.30.0 writer or a value this reader drops as unknown; never a date
   detail?: string
-  // Set only by the telemetry hook, on every row it writes: absence does not date a row (no
-  // server-written row carries it) and presence is not an outcome (`review: reached` is inferred).
+  // Set by the telemetry hook (every row) and `ticket-workflow gate`; presence is not an outcome:
+  // `review: reached` is inferred, and a gate `unattributed` row carries it too.
   outcomeFrom?: 'event'
+  exitCode?: number
+  durationMs?: number
+  tests?: TestCounts
 }
+
+export type TestCounts = { passed: number; failed: number; skipped: number }
 
 // A reduced pipeline node: latest state per step, or pending if none arrived.
 export type PipelineStep = {
