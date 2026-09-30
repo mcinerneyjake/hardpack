@@ -480,10 +480,13 @@ git commit -m "$(cat <<'EOF'
 
 <1–3 sentences on why, not what. Omit if the summary is self-contained.>
 
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+<every trailer line the session's attribution reminder asks commits to end with>
 EOF
 )"
 ```
+
+Copy those trailers verbatim from the reminder — never type a model name from memory or from this file.
+With no reminder in context, end with `Co-Authored-By: Claude <noreply@anthropic.com>` and say so.
 
 Commit as often as the work needs — the squash-merge collapses the branch to one commit on `main`.
 Never put two tickets on one branch.
