@@ -44,6 +44,20 @@ async function writeRaw(id: string, fields: Record<string, string>) {
   await fs.writeFile(path.join(dirs.tickets, `${id}.md`), body, 'utf8');
 }
 
+// Walked upward, not cwd-resolved: a worktree has no node_modules of its own (imports resolve to
+// the primary checkout), and the cwd-anchored spelling failed there as 'undefinedundefined' —
+// the swallowed spawn error, not a CLI regression (tkt-7bac51ae3cc6).
+function findBin(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    const candidate = path.join(dir, 'node_modules', '.bin', 'ticket-workflow');
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error('ticket-workflow bin not found in any enclosing node_modules');
+    dir = parent;
+  }
+}
+
 describe('pinned ticket-workflow build: parent-cycle guard', () => {
   it('rejects a ticket as its own parent', async () => {
     const t = await createTicket({ title: 'A' });
@@ -199,6 +213,102 @@ describe('pinned ticket-workflow build: backup-on-write snapshots the prior body
   });
 });
 
+// The recoverability any future delete_ticket allowlist entry would rest on (tkt-99e1cfcebefb) —
+// a bump dropping the fail-closed record or `restore --undelete` would otherwise pass the gate.
+describe('pinned ticket-workflow build: an MCP delete_ticket is recoverable', () => {
+  // The CLI from the SAME install the in-process imports use, never an ancestor's .bin.
+  const cli = path.join(
+    path.dirname(createRequire(import.meta.url).resolve('ticket-workflow/hooks/guard-worktree.mjs')),
+    '..', 'dist', 'cli', 'index.js',
+  );
+  // A session's BOARD_DIR_OVERRIDE names the real central board; strip it so no resolution order reaches it.
+  const undelete = (id: string) => {
+    const env = { ...process.env };
+    delete env.BOARD_DIR_OVERRIDE;
+    delete env.CLAUDE_PROJECT_DIR;
+    const r = spawnSync(process.execPath, [cli, 'restore', id, '--undelete'], { encoding: 'utf8', env, cwd: dirs.tickets });
+    expect(r.error, 'the CLI failed to spawn at all').toBeUndefined();
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const del = async (id: string) => {
+    const res = await handleToolCall('delete_ticket', { id });
+    return { isError: res.isError === true, text: res.content.map((c) => c.text).join('\n') };
+  };
+
+  it('restores the deleted file byte-for-byte and names the edges it did not re-link', async () => {
+    const t = await createTicket({ title: 'Delete me', body: 'final words' });
+    const child = await createTicket({ title: 'Child' });
+    await updateTicket(child.id, { parent: t.id });
+    const file = path.join(dirs.tickets, `${t.id}.md`);
+    const before = await fs.readFile(file, 'utf8');
+
+    expect((await del(t.id)).isError).toBe(false);
+    expect(existsSync(file)).toBe(false);
+
+    const r = undelete(t.id);
+    expect(r.status, r.out).toBe(0);
+    expect(await fs.readFile(file, 'utf8')).toBe(before);
+    expect(r.out).toContain(child.id);
+    expect((await getTicket(child.id)).parent).toBeNull();
+  });
+
+  it('revives the FINAL state across two delete cycles, not an older snapshot', async () => {
+    const t = await createTicket({ title: 'Edited', body: 'v1' });
+    await updateTicket(t.id, { body: 'v2' });
+    await del(t.id);
+    expect(undelete(t.id).status).toBe(0);
+    await updateTicket(t.id, { body: 'v3' });
+    await del(t.id);
+
+    expect(undelete(t.id).status).toBe(0);
+    expect((await getTicket(t.id)).body).toBe('v3');
+  });
+
+  it('refuses the delete when the history directory cannot be created', async () => {
+    const t = await createTicket({ title: 'Keep me', body: 'x' });
+    await fs.writeFile(path.join(dirs.tickets, '.history'), 'not a dir');
+
+    const d = await del(t.id);
+    expect(d.isError).toBe(true);
+    expect(d.text).toMatch(/Refusing to delete/);
+    expect((await getTicket(t.id)).body).toBe('x');
+  });
+
+  it('refuses the delete when an existing history directory is not writable', async () => {
+    const t = await createTicket({ title: 'Keep me too', body: 'x' });
+    await updateTicket(t.id, { body: 'y' }); // creates .history/<id>
+    const dir = path.join(dirs.tickets, '.history', t.id);
+    await fs.chmod(dir, 0o555);
+    try {
+      const d = await del(t.id);
+      expect(d.isError).toBe(true);
+      expect(d.text).toMatch(/Refusing to delete/);
+      expect((await getTicket(t.id)).body).toBe('y');
+    } finally {
+      await fs.chmod(dir, 0o755); // or beforeEach's cleanup cannot empty it
+    }
+  });
+
+  it('refuses to undelete over a live ticket', async () => {
+    const t = await createTicket({ title: 'Alive', body: 'current' });
+    await del(t.id);
+    expect(undelete(t.id).status).toBe(0);
+    await updateTicket(t.id, { body: 'edited after revival' });
+
+    const r = undelete(t.id);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toMatch(/already exists/);
+    expect((await getTicket(t.id)).body).toBe('edited after revival');
+  });
+
+  it('refuses to undelete an id with no history, writing nothing', async () => {
+    const id = 'tkt-000000000000';
+    const r = undelete(id);
+    expect(r.status).not.toBe(0);
+    expect(existsSync(path.join(dirs.tickets, `${id}.md`))).toBe(false);
+  });
+});
+
 // readEvents' fail-closed rule (tkt-fc7c6846903d, package v0.9.0) and its lost-line counts
 // (tkt-355581f9dab3, v0.10.0). hardpack imported both by bumping the pin and asserts neither:
 // server/index.test.ts drives the HTTP route, so a regression that restored `catch { return []; }`
@@ -266,20 +376,6 @@ describe('pinned ticket-workflow build: unreadable event logs fail closed', () =
 // test touches the pinned CLI, so a bump to a build that dropped or renamed the subcommand would
 // pass every local gate and only fail in CI.
 describe('pinned ticket-workflow build: CLI ships the audit and vacuous subcommands', () => {
-  // Walked upward, not cwd-resolved: a worktree has no node_modules of its own (imports resolve to
-  // the primary checkout), and the cwd-anchored spelling failed there as 'undefinedundefined' —
-  // the swallowed spawn error, not a CLI regression (tkt-7bac51ae3cc6).
-  const findBin = (): string => {
-    let dir = path.dirname(fileURLToPath(import.meta.url));
-    for (;;) {
-      const candidate = path.join(dir, 'node_modules', '.bin', 'ticket-workflow');
-      if (existsSync(candidate)) return candidate;
-      const parent = path.dirname(dir);
-      if (parent === dir) throw new Error('ticket-workflow bin not found in any enclosing node_modules');
-      dir = parent;
-    }
-  };
-
   it('usage names audit and vacuous', () => {
     const r = spawnSync(findBin(), [], { encoding: 'utf8' });
     expect(r.error, 'the CLI failed to spawn at all').toBeUndefined();
