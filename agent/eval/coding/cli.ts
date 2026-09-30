@@ -10,13 +10,16 @@ import {
 import { evaluateCoding, runControls } from './codingEval.js';
 import { assertContaminationCorpus } from './contamination.js';
 import { exec, readContaminationCorpus, realDeps, screenCase, sha256 } from './realDeps.js';
+import { RUN_REPORT } from './layout.js';
+import { DEFAULT_KEEP_RUNS, pruneRuns, type PruneResult } from './retention.js';
 
 // Cloud-metered: every session is a Claude Code run billed per token. Never wired into `npm test`
 // or CI — gateIsolation.test.ts holds that.
 //
 //   npm run eval:coding -- --select 20        build agent/eval/coding/cases.json from merged PRs
 //   npm run eval:coding -- --controls-only    run every pre-session check, spend nothing
-//   npm run eval:coding -- [--trials k] [--budget usd] [--cases id,id]
+//   npm run eval:coding -- --prune [--keep n] drop old runs' fixture trees, keep their reports
+//   npm run eval:coding -- [--trials k] [--budget usd] [--cases id,id] [--keep n]
 
 export const MANIFEST_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cases.json');
 
@@ -34,10 +37,15 @@ interface Args {
   trials: number;
   budget: number;
   only: string[] | null;
+  prune: boolean;
+  keep: number;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { select: null, controlsOnly: false, trials: 1, budget: DEFAULT_BUDGET_USD, only: null };
+  const a: Args = {
+    select: null, controlsOnly: false, trials: 1, budget: DEFAULT_BUDGET_USD, only: null,
+    prune: false, keep: DEFAULT_KEEP_RUNS,
+  };
   const num = (flag: string, v: string | undefined): number => {
     const n = Number(v);
     if (v === undefined || !Number.isFinite(n) || n <= 0) throw new Error(`${flag} needs a positive number, got ${v ?? 'nothing'}`);
@@ -50,9 +58,12 @@ function parseArgs(argv: string[]): Args {
     else if (f === '--trials') a.trials = num(f, argv[++i]);
     else if (f === '--budget') a.budget = num(f, argv[++i]);
     else if (f === '--cases') a.only = (argv[++i] ?? '').split(',').filter(Boolean);
+    else if (f === '--prune') a.prune = true;
+    else if (f === '--keep') a.keep = num(f, argv[++i]);
     else throw new Error(`unknown argument: ${f}`);
   }
-  if (a.select !== null && (a.controlsOnly || a.only)) throw new Error('--select builds the manifest; it takes no other mode');
+  if (a.select !== null && (a.controlsOnly || a.only || a.prune)) throw new Error('--select builds the manifest; it takes no other mode');
+  if (a.prune && (a.controlsOnly || a.only)) throw new Error('--prune reclaims disk; it takes no other mode');
   return a;
 }
 
@@ -138,6 +149,22 @@ async function selectCases(repoRoot: string, boardDir: string, want: number): Pr
   if (chosen.length < want) process.stdout.write(`! only ${chosen.length} of the ${want} requested were eligible\n`);
 }
 
+function reportPrune(result: PruneResult, keep: number): void {
+  if (result.pruned.length === 0 && result.skipped.length > 0) {
+    // Never "nothing to prune" here: someone running --prune because the disk is full would read
+    // that headline and conclude retention had nothing left to give back.
+    process.stdout.write(`Retention: reclaimed nothing — ${result.skipped.length} run(s) are unfinished and still recent.\n`);
+  } else if (result.pruned.length === 0) {
+    process.stdout.write(`Retention: nothing to prune (keeping ${keep} run(s)).\n`);
+  } else {
+    process.stdout.write(
+      `Retention: removed ${result.trees} fixture tree(s) from ${result.pruned.length} run(s), keeping the newest ${keep}. Reports, transcripts and settings kept.\n`,
+    );
+    for (const stamp of result.pruned) process.stdout.write(`  pruned ${stamp}\n`);
+  }
+  for (const stamp of result.skipped) process.stdout.write(`  skipped ${stamp} — no report.json and still recent\n`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const repoRoot = await primaryCheckout(process.cwd());
@@ -145,6 +172,11 @@ async function main(): Promise<void> {
 
   if (args.select !== null) {
     await selectCases(repoRoot, boardDir, args.select);
+    return;
+  }
+
+  if (args.prune) {
+    reportPrune(await pruneRuns(evalRootFor(repoRoot), { keep: args.keep }), args.keep);
     return;
   }
 
@@ -174,11 +206,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  // After the --controls-only return, so a run documented as spending nothing also destroys nothing,
+  // and still before the first metered session. `protect` keeps this run's own dir out of the sweep.
+  reportPrune(await pruneRuns(evalRoot, { keep: args.keep, protect: stamp }), args.keep);
+
   const sessions = cases.length * args.trials;
   process.stdout.write(`Up to ${sessions} session(s) at a $${args.budget} cap each — spend bounded by $${(sessions * args.budget).toFixed(0)}.\n`);
   const report = await evaluateCoding(cases, deps, { trials: args.trials });
   process.stdout.write(`${formatReport(report)}\n`);
-  await fs.writeFile(path.join(runDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
+  await fs.writeFile(path.join(runDir, RUN_REPORT), `${JSON.stringify(report, null, 2)}\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

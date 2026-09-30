@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { asTodo, type CodingCase } from './cases.js';
+import { LABEL_TREE, PRISTINE_TREE, RUN_RESULTS, SESSION_LOG } from './layout.js';
 import { InstrumentFault, type CodingDeps } from './codingEval.js';
 import {
   assertContaminationCorpus, distinctiveIdentifiers, screenContamination, type CorpusFile,
@@ -184,7 +185,7 @@ export function realDeps(cfg: RealDepsConfig): CodingDeps {
 
   // One install per case, cloned for every control and trial, so each tree starts identical.
   async function buildPristine(c: CodingCase): Promise<string> {
-    const dir = path.join(cfg.runDir, c.ticketId, 'pristine');
+    const dir = path.join(cfg.runDir, c.ticketId, PRISTINE_TREE);
     await fs.mkdir(dir, { recursive: true });
     const tar = path.join(cfg.runDir, c.ticketId, 'base.tar');
     await git(['archive', '--format=tar', '-o', tar, c.base]);
@@ -205,7 +206,7 @@ export function realDeps(cfg: RealDepsConfig): CodingDeps {
     if (!p) { p = buildPristine(c); pristine.set(c.ticketId, p); }
     const src = await p;
     const parent = path.join(cfg.runDir, c.ticketId, label);
-    const dir = path.join(parent, 'repo');
+    const dir = path.join(parent, LABEL_TREE);
     await fs.mkdir(parent, { recursive: true });
     // APFS clone where available: a copy-on-write node_modules costs nothing per trial.
     const cp = await exec('cp', ['-cR', src, dir], { cwd: parent });
@@ -239,7 +240,7 @@ export function realDeps(cfg: RealDepsConfig): CodingDeps {
       if (inRepo.code === 0) {
         throw new Error(`coding-eval: run directory ${cfg.runDir} is inside the git repo ${inRepo.out.trim()} — a replay would see its files and history. Set EVAL_CODING_DIR outside any repo.`);
       }
-      const foreign = foreignAncestorClaudeMds(path.join(cfg.runDir, 'x', 'y', 'repo'), cfg.repoRoot, existsSync);
+      const foreign = foreignAncestorClaudeMds(path.join(cfg.runDir, 'x', 'y', LABEL_TREE), cfg.repoRoot, existsSync);
       if (foreign.length > 0) {
         throw new Error(`coding-eval: replays would load ${foreign.join(', ')}, which a real session in ${cfg.repoRoot} never does. Move EVAL_CODING_DIR.`);
       }
@@ -292,13 +293,13 @@ export function realDeps(cfg: RealDepsConfig): CodingDeps {
         input: replayPrompt(c.ticketId),
         env: sanitizedEnv(process.env, { BOARD_DIR_OVERRIDE: board }),
         capMs: cfg.sessionCapMs,
-        logFile: path.join(parent, 'session.log'),
+        logFile: path.join(parent, SESSION_LOG),
       });
       return { exitCode: r.code, durationMs: Date.now() - started, timedOut: r.timedOut, ...sessionResult(r.out) };
     },
 
     async record(result) {
-      await fs.appendFile(path.join(cfg.runDir, 'results.jsonl'), `${JSON.stringify(result)}\n`);
+      await fs.appendFile(path.join(cfg.runDir, RUN_RESULTS), `${JSON.stringify(result)}\n`);
     },
 
     runFiles: (dir, files) => runVitest(dir, files),
