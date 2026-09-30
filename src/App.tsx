@@ -303,7 +303,7 @@ export default function App() {
       prev.map((t) => (t.id === id ? { ...t, status, order } : t)));
     try {
       await api.update(id, { status, order });
-      // A move into done/archived mints the `done` event that completedAt is derived from. The
+      // A move into done mints the `done` event that completedAt is derived from (archived mints its own step). The
       // optimistic patch above has no completedAt and markLocalWrite() mutes the SSE echo, so
       // without an explicit reload the pill and the "N today" chip would not appear until some
       // unrelated write (tkt-17dbc816e247).

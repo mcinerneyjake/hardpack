@@ -31,7 +31,7 @@ export default function TerminalPipelinePhase({ ticketId, minimized, onStartShel
   // A dropped poll keeps the last good phase (the hook retains data on error); a malformed or
   // never-worked one renders nothing. Either way the terminal stream is untouched.
   if (!valid) return null;
-  const view = pipelineView(valid.pipeline, status);
+  const view = pipelineView(valid.pipeline, status, valid.events);
   if (!view.started) return null;
 
   // view.current carries the live phase label ("<Step> failed", "<Group>: outcome unknown"), but only while in-progress.
