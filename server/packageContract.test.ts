@@ -9,7 +9,8 @@ import os from 'node:os';
 import { createTicket, updateTicket, getTicket, deleteTicket, archiveStaleTickets, summarize, HttpError } from './tickets.js';
 import { BOARD_STATUSES, PRIORITIES, type Ticket } from '../shared/constants.js';
 import { sweep, testBlocks, screenBlock, assertInstruments, controlFailures, CONTROLS, HITS } from '../scripts/probe/vacuous-tests.mjs';
-import { readEvents } from './events.js';
+import { getTicketEvents, readEvents } from './events.js';
+import { pipelineView } from '../src/lib/pipelineView.js';
 import { handleToolCall } from '../mcp/handlers.js';
 import { setupTempTicketDirs } from '../test-support/tempTicketDirs.js';
 import { holdTestRun, releaseTestRun, TEST_RUN_GLOBAL_SETUP, type Registry } from 'ticket-workflow/test-run';
@@ -105,6 +106,35 @@ describe('pinned ticket-workflow build: archiveStaleTickets staleness rule', () 
     await writeRaw('tkt-open00000', { status: 'in-progress' });
     expect(await archiveStaleTickets()).toBe(0);
     expect((await getTicket('tkt-open00000')).status).toBe('in-progress');
+  });
+});
+
+// pipelineView parses the archived event's free-text `from <status>` detail; a reworded detail
+// would silently imply nothing for every archived ticket (tkt-d17d30a7b3ca).
+describe('pinned ticket-workflow build: the archived event round-trips into pipelineView', () => {
+  const reachedKeys = async (id: string) => {
+    const { pipeline, events } = await getTicketEvents(id);
+    return pipelineView(pipeline, (await getTicket(id)).status, events).nodes
+      .filter((n) => n.state === 'reached' || n.state === 'passed').map((n) => n.key);
+  };
+
+  it('renders work archived straight from todo as not started', async () => {
+    const t = await createTicket({ title: 'Abandoned' });
+    await updateTicket(t.id, { status: 'archived' });
+    expect(await reachedKeys(t.id)).toEqual([]);
+  });
+
+  it('keeps the qa milestone of work archived from qa, without implying done', async () => {
+    const t = await createTicket({ title: 'Stalled in QA' });
+    await writeRaw(t.id, { status: 'qa' });
+    await updateTicket(t.id, { status: 'archived' });
+    expect(await reachedKeys(t.id)).toEqual(['started', 'qa']);
+  });
+
+  it('renders a done ticket the archive sweep retired as done', async () => {
+    await writeRaw('tkt-sweep0000', { status: 'done' });
+    expect(await archiveStaleTickets()).toBe(1);
+    expect(await reachedKeys('tkt-sweep0000')).toEqual(['started', 'qa', 'done']);
   });
 });
 

@@ -1,4 +1,4 @@
-import { STEPS, type PipelineStep, type StepId, type StatusId } from '../../shared/constants.js';
+import { STEPS, isStatusId, type PipelineStep, type StepId, type StatusId, type TicketEvent } from '../../shared/constants.js';
 
 // Display grouping: the three gate checks collapse into one "Gate" node (the timeline still shows them separately). review = the manual "Ready to commit?" gate.
 interface DisplayGroup { key: string; label: string; steps: StepId[] }
@@ -38,27 +38,40 @@ export interface TrackerView {
 
 const isComplete = (s: NodeState): boolean => s === 'reached' || s === 'passed';
 
-// Milestones the status alone proves complete even without an event: in-progress⇒started; qa⇒started+qa; done/archived⇒all three.
+// Milestones the status alone proves complete even without an event: in-progress⇒started; qa⇒started+qa; done⇒all three.
 function statusImplied(status: StatusId): StepId[] {
   switch (status) {
     case 'in-progress': return ['started'];
     case 'qa': return ['started', 'qa'];
-    case 'done':
-    case 'archived': return ['started', 'qa', 'done'];
+    case 'done': return ['started', 'qa', 'done'];
     default: return [];
   }
+}
+
+// archive_ticket retires abandoned work too, so archived implies only what the status it left did.
+// An unknown prior status implies nothing: rendering it Done is the claim this exists to stop (tkt-d17d30a7b3ca).
+function archivedFrom(events: readonly TicketEvent[]): StatusId | null {
+  const last = events.filter((e) => e.step === 'archived').at(-1);
+  const prior = /^from (\S+)$/.exec(last?.detail ?? '')?.[1];
+  return prior !== undefined && isStatusId(prior) ? prior : null;
+}
+
+function impliedSteps(status: StatusId, events: readonly TicketEvent[]): StepId[] {
+  if (status !== 'archived') return statusImplied(status);
+  const prior = archivedFrom(events);
+  return prior ? statusImplied(prior) : [];
 }
 
 function stepLabel(step: StepId): string {
   return STEPS.find((s) => s.id === step)?.label ?? step;
 }
 
-export function pipelineView(pipeline: PipelineStep[], status: StatusId): TrackerView {
+export function pipelineView(pipeline: PipelineStep[], status: StatusId, events: readonly TicketEvent[]): TrackerView {
   // Reduced event state, upgraded to complete for status-implied milestones without their own event.
   const stepState = new Map<StepId, PipelineStep['state']>();
   const stepAt = new Map<StepId, string | null>();
   for (const p of pipeline) { stepState.set(p.step, p.state); stepAt.set(p.step, p.at); }
-  for (const s of statusImplied(status)) {
+  for (const s of impliedSteps(status, events)) {
     if (!isComplete(stepState.get(s) ?? 'pending')) stepState.set(s, 'reached');
   }
 
@@ -107,9 +120,8 @@ export function pipelineView(pipeline: PipelineStep[], status: StatusId): Tracke
   // Progress = furthest node the green connector reaches (active frontier while in-progress, else last completed) — a position, not a completed-count, so skipped middle nodes sit on the line.
   const reachedIdx = activeIdx >= 0 ? activeIdx : lastDoneIdx;
   const done = reachedIdx + 1;
-  const started =
-    status === 'in-progress' || status === 'qa' || status === 'done' ||
-    pipeline.some((p) => p.state !== 'pending');
+  // Read after implication, so an archived ticket counts as started exactly when its prior status did.
+  const started = [...stepState.values()].some((s) => s !== 'pending');
 
   return { nodes, current: currentLabel(groups, status, lastDoneIdx, activeIdx, failedStep), failed, started, progress: { done, total: nodes.length } };
 }

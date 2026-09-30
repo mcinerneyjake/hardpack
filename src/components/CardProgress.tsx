@@ -6,7 +6,7 @@ export default function CardProgress({ ticketId, status }: { ticketId: string; s
   const { data } = useTicketEvents(ticketId, true);
   if (!data) return null;
 
-  const view = pipelineView(data.pipeline, status);
+  const view = pipelineView(data.pipeline, status, data.events);
   if (!view.started) return null;
 
   const pct = Math.round((view.progress.done / view.progress.total) * 100);

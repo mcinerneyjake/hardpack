@@ -143,7 +143,7 @@ describe('statusFromPipeline → pipelineView', () => {
 
   it('shows no phase on a never-worked ticket (must not read "Branch")', () => {
     const pipeline = allPending();
-    const view = pipelineView(pipeline, statusFromPipeline(pipeline));
+    const view = pipelineView(pipeline, statusFromPipeline(pipeline), []);
     expect(view.started).toBe(false); // the header indicator renders nothing in this state
     expect(view.current).toBeNull();
     expect(view.nodes.some((n) => n.state === 'active')).toBe(false);
@@ -152,7 +152,7 @@ describe('statusFromPipeline → pipelineView', () => {
   it('reads Branch only once Started has really landed', () => {
     const pipeline = allPending().map((p): PipelineStep =>
       p.step === 'started' ? { ...p, state: 'reached', at: '2026-07-22T10:00:00.000Z' } : p);
-    const view = pipelineView(pipeline, statusFromPipeline(pipeline));
+    const view = pipelineView(pipeline, statusFromPipeline(pipeline), []);
     expect(view.started).toBe(true);
     expect(view.current).toBe('Branch');
   });
@@ -163,7 +163,7 @@ describe('statusFromPipeline → pipelineView', () => {
       if (p.step === 'typecheck') return { ...p, state: 'failed', at: '2026-07-22T10:01:00.000Z' };
       return p;
     });
-    const view = pipelineView(pipeline, statusFromPipeline(pipeline));
+    const view = pipelineView(pipeline, statusFromPipeline(pipeline), []);
     expect(view.failed).toBe(true);
     expect(view.current).toBe('Typecheck failed');
   });

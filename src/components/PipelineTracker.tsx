@@ -22,7 +22,7 @@ export default function PipelineTracker({ ticketId, status }: { ticketId: string
     return error ? <div className="tracker tracker--error">Couldn't load progress.</div> : null;
   }
 
-  const view = pipelineView(data.pipeline, status);
+  const view = pipelineView(data.pipeline, status, data.events);
   if (!view.started) return null; // don't show a wall of grey for un-started tickets
 
   // Confirm-only: Review is recorded once, at the awaiting frontier, then locks.
