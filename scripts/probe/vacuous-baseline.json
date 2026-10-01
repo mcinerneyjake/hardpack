@@ -47,7 +47,7 @@
       "path": "../job-tracker",
       "files": 23,
       "blocks": 333,
-      "enforced": true
+      "enforced": false
     },
     "equipment-schedule": {
       "max": 11,
@@ -71,5 +71,6 @@
     }
   },
   "_engine": "Since 2026-08-18 (tkt-05b1630bb53a) the probe and the compare are the ticket-workflow package (pinned v0.19.0); vacuous-tests.mjs is a re-export shim and vacuous-ratchet.mjs keeps only the central-baseline layer (row paths, resolveRoot). The packaged engine detects shapes the old one missed (destructured loop sources, forEach on a call result, for-await) and excludes it.todo from block counts, so breadths were regenerated in this pass on clean mains — EXCEPT equipment-schedule, whose tree was mid-flight on another session’s branch; its recorded breadth is still the 08-18 pre-swap sweep, and the packaged engine read 15 candidates against its ceiling of 11 on that dirty snapshot. Re-triage belongs to its adoption pass, on a clean main.",
-  "_enforcedProbe": "`enforced` records mutable external state (another repo's CI wiring), verified 2026-08-18 — re-verify, never trust: in the repo, `gh workflow list --all` must show its gate workflow active AND its gate must reach `ticket-workflow vacuous . --check` (grep the workflow/verify chain for `vacuous`; ticket-workflow instead self-checks via src/vacuous/ratchet.test.ts \"this repo against its own ceiling\"). A disabled workflow contributes NO check and everything reads green — the exact rot this repo's own review workflow demonstrated."
+  "_enforcedProbe": "`enforced` records mutable external state (another repo's CI wiring), verified 2026-08-18 — re-verify, never trust: in the repo, `gh workflow list --all` must show its gate workflow active AND its gate must reach `ticket-workflow vacuous . --check` (grep the workflow/verify chain for `vacuous`; ticket-workflow instead self-checks via src/vacuous/ratchet.test.ts \"this repo against its own ceiling\"). A disabled workflow contributes NO check and everything reads green — the exact rot this repo's own review workflow demonstrated.",
+  "_unenforced": "2026-10-01, tkt-58957768fab2: job-tracker -> enforced: false. It dropped the ticket-workflow dependency, its `vacuous` script and its repo-local baseline; the row stays as a RECORD of its 8 untriaged candidates, which nothing compares to a live sweep."
 }
