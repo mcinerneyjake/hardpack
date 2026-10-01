@@ -378,11 +378,16 @@ run slot (epic `tkt-5d922d998de4`, rule `tkt-a4b482018a8f` — `unmeasured`). **
   `PASS` counts as unwired. Take the value from that repo's own docs; never list repos as unwired
   here, because that list goes stale.
 - **Bound the slot wait so the whole gate fits the Bash timeout.** The hold waits up to
-  `TEST_SLOTS_WAIT_MS` (default 10 min, which is already the Bash tool's 600000 ms cap) before the
-  suite even starts, and the pre-commit hook runs the whole gate. So set `TEST_SLOTS_WAIT_MS` low
-  enough that wait + suite fits the timeout you pass. A hold that times out refuses loudly and can be
-  retried; a Bash call killed mid-hook cannot. Why the hook runs the *whole* suite:
-  `docs/claude-md/pre-commit-full-suite.md`.
+  `TEST_SLOTS_WAIT_MS` before the suite starts — the package default is 10 min, already the Bash
+  tool's 600000 ms cap. **`vitest.config.ts` cuts that to `AGENT_SLOT_WAIT_MS` when std-env detects
+  an agent and the variable is unset or empty** (`tkt-3b197009eaae`); a non-empty value wins, and
+  outside an agent environment the default stands. That only makes a never-free slot refuse early —
+  a slot freeing late still runs the suite after the wait, **so still pass a commit timeout covering
+  wait + the whole gate.** It lives in the config, not `.husky/pre-commit`, because with an absolute
+  `core.hooksPath` (probe `git config --show-origin core.hooksPath`) a worktree's commit runs the
+  *primary's* hook file but always loads its own config. On timeout `npm test` exits 75; a commit
+  just fails, and only husky's `pre-commit script failed (code 75)` line names it — retry that; a
+  Bash call killed mid-hook cannot be. Why the hook runs the *whole* suite: `docs/claude-md/pre-commit-full-suite.md`.
 
 ## Branch, commit & PR workflow
 
