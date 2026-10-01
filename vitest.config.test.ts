@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import picomatch from 'picomatch';
+import { isAgent } from 'std-env';
 
 import { TEST_RUN_GLOBAL_SETUP, TestRunSlotReporter } from 'ticket-workflow/test-run';
 import { describe, it, expect } from 'vitest';
-import config, { COVERAGE_EMPTY_BY_DESIGN, vitestDefaultReporters } from './vitest.config.js';
+import config, { AGENT_SLOT_WAIT_MS, COVERAGE_EMPTY_BY_DESIGN, holdOptions, vitestDefaultReporters } from './vitest.config.js';
 
 // Pins the collection excludes and the subprocess worker cap (the .claude/settings.audit.test.mjs
 // precedent: audit the config that nothing else would catch drifting). Deleting the worktrees glob
@@ -401,5 +402,42 @@ describe('coverage empty-by-design allowlist is internally consistent', () => {
     // The realistic rot once a SECOND file is added is the first entry's reason pasted verbatim.
     const reasons = entries.map(([, r]) => r);
     expect(new Set(reasons).size, 'two files share one reason').toBe(reasons.length);
+  });
+});
+
+// A commit's hook loads THIS config from the worktree, so the bound lives here rather than in
+// .husky/pre-commit, which every worktree runs from the primary's checkout (tkt-3b197009eaae).
+describe('test-slot wait for agent runs', () => {
+  // The harness's default Bash timeout. Half of it is room for typecheck + lint (~12s measured) so a
+  // wait that never gets a slot refuses before the kill; a slot freeing late can still overrun.
+  const BASH_TOOL_DEFAULT_TIMEOUT_MS = 120_000;
+
+  it('bounds an agent run that set no wait, so a never-free slot refuses inside the default timeout', () => {
+    expect(holdOptions({}, true)).toEqual({ repo: 'hardpack', waitMs: AGENT_SLOT_WAIT_MS });
+    expect(AGENT_SLOT_WAIT_MS).toBeGreaterThan(0);
+    expect(AGENT_SLOT_WAIT_MS).toBeLessThanOrEqual(BASH_TOOL_DEFAULT_TIMEOUT_MS / 2);
+  });
+
+  it('bounds an agent run whose TEST_SLOTS_WAIT_MS is empty, which the package would read as 0', () => {
+    expect(holdOptions({ TEST_SLOTS_WAIT_MS: '' }, true)).toEqual({ repo: 'hardpack', waitMs: AGENT_SLOT_WAIT_MS });
+  });
+
+  it('leaves an explicit TEST_SLOTS_WAIT_MS in force', () => {
+    expect(holdOptions({ TEST_SLOTS_WAIT_MS: '4321' }, true)).toEqual({ repo: 'hardpack' });
+  });
+
+  it('keeps the package default outside an agent environment', () => {
+    expect(holdOptions({}, false)).toEqual({ repo: 'hardpack' });
+  });
+
+  // Only discriminating where isAgent is true (a Claude session, not CI), which is where commits happen.
+  it('detects the agent from std-env by default', () => {
+    expect(holdOptions({})).toEqual(holdOptions({}, isAgent));
+  });
+
+  // holdTestRun runs at module load, so the call site is the only seam; read it as text.
+  it('passes holdOptions() to the config-time hold', () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'vitest.config.ts'), 'utf8');
+    expect(source).toMatch(/^await holdTestRun\(holdOptions\(\)\);$/m);
   });
 });

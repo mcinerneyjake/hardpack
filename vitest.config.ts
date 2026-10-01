@@ -1,10 +1,21 @@
 import { availableParallelism } from 'node:os';
 import { isAgent } from 'std-env';
-import { holdTestRun, TEST_RUN_GLOBAL_SETUP, TestRunSlotReporter } from 'ticket-workflow/test-run';
+import { holdTestRun, TEST_RUN_GLOBAL_SETUP, TestRunSlotReporter, type HoldTestRunOptions } from 'ticket-workflow/test-run';
 import { defineConfig } from 'vitest/config';
 
+const REPO = 'hardpack';
+
+// The package's 10-min default outlives an agent's Bash timeout, so a full-slots commit died as a bare
+// timeout instead of refusing with 75 (tkt-3b197009eaae). Outside an agent environment it stands.
+export const AGENT_SLOT_WAIT_MS = 60_000;
+
+// Empty counts as unset: the package parses '' as 0, i.e. "refuse at once".
+export function holdOptions(env: NodeJS.ProcessEnv = process.env, agent: boolean = isAgent): HoldTestRunOptions {
+  return agent && !env.TEST_SLOTS_WAIT_MS ? { repo: REPO, waitMs: AGENT_SLOT_WAIT_MS } : { repo: REPO };
+}
+
 // Machine-wide run slot + per-run TMPDIR, before vitest snapshots worker env (tkt-7bb0ed6b14e3).
-await holdTestRun({ repo: 'hardpack' });
+await holdTestRun(holdOptions());
 
 // The suites that drive real subprocesses (git commits through the guard hooks, the probe CLIs,
 // the terminal setup scripts). They are split into their own project so they can run at a
@@ -124,7 +135,7 @@ export default defineConfig({
     // `holdTestRun` runs once at config resolution and the teardown above only fires as the process
     // exits, so without this reporter a `test:watch` session pins a machine-wide slot while idle
     // (tkt-52f95f9f4a9a). No-op under `vitest run` — the globalSetup release still owns that path.
-    reporters: [...vitestDefaultReporters(), new TestRunSlotReporter({ repo: 'hardpack' })],
+    reporters: [...vitestDefaultReporters(), new TestRunSlotReporter({ repo: REPO })],
     projects: [
       {
         test: {
