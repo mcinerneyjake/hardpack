@@ -12,7 +12,7 @@ checkpoints. As of 2026-09-08: **378 commits, 346 co-authored by Claude, across 
 
 The ticket engine is a separate open-source package, [`ticket-workflow`](https://github.com/mcinerneyjake/ticket-workflow)
 (MIT) — MCP server, guard and telemetry hooks, and a pipeline CLI — consumed here by pinned tag and
-installed in five repos, this one included, plus the machine-wide Claude Code config. This repo is
+installed in four repos, this one included, plus the machine-wide Claude Code config. This repo is
 the reference UI on top of it.
 
 Case study, with annotated traces from real runs:
