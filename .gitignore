@@ -17,6 +17,8 @@ runs/
 traces/
 # Session-retrospective proposals quote private transcripts (tkt-4cda7a4ab619).
 retros/
+# baseline-metrics.mjs --json snapshots: per-ticket ids across private projects (tkt-65a9fa9ebd09).
+/baselines/
 test-results/
 playwright-report/
 coverage/

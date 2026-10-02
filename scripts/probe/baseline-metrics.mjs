@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Baseline metrics for the workflow rewrite (tkt-4caa375dc3b7; definitions on that ticket).
-//   node scripts/probe/baseline-metrics.mjs [boardRoot] [--transcripts <dir>]...   exit 0 measured · 2 could not measure
+//   node scripts/probe/baseline-metrics.mjs [boardRoot] [--transcripts <dir>]... [--json <snapshot name>]   (writes baselines/<name>.json)   exit 0 measured · 2 could not measure
 
-import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, realpathSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -216,11 +217,12 @@ export function scanTranscripts(dirs) {
         unattributed.reviews += u.reviews.length;
       }
       for (const [id, s] of segments) {
-        const t = perTicket.get(id) ?? { ...emptySegment(), interactive: false };
+        const t = perTicket.get(id) ?? { ...emptySegment(), interactive: false, transcripts: [] };
         t.humanTurns += s.humanTurns;
         t.gateAnswers += s.gateAnswers;
         t.reviews.push(...s.reviews);
         t.interactive ||= !night;
+        t.transcripts.push(path.join(path.basename(dir), f));
         perTicket.set(id, t);
       }
     }
@@ -309,9 +311,12 @@ function workStats(worked) {
   };
 }
 
-// Only ids on the board count, so a fixture or eval id cannot leak into a real number.
+// Only ids on the board count, so a fixture or eval id cannot leak into a real number. snapshot() shares
+// this so its per-ticket rows always recompute the metrics stored beside them.
+const onBoard = (perTicket, tickets) => [...perTicket].filter(([id]) => tickets.has(id));
+
 export function measure({ perTicket, tickets, project = 'hardpack' }) {
-  const worked = [...perTicket].filter(([id]) => tickets.has(id));
+  const worked = onBoard(perTicket, tickets);
   const open = [...tickets].filter(([, t]) => t.project === project && OPEN_BACKLOG.has(t.status));
   const classified = open.map(([id, t]) => ({ id, title: t.title ?? '', ...classifyInfra(t) }));
   const infra = classified.filter((c) => c.infra);
@@ -428,21 +433,93 @@ export function formatReport(m, { files, window, dirs, skipped, unreadable, unat
   return lines.join('\n');
 }
 
-export function runCli(argv, { cwd = process.cwd(), env = process.env, home = os.homedir(), control = assertControl } = {}) {
-  const args = [...argv];
-  const transcriptDirs = [];
-  for (let i = args.indexOf('--transcripts'); i !== -1; i = args.indexOf('--transcripts')) {
-    const value = args[i + 1];
-    if (!value || value.startsWith('-')) throw new ProbeError('--transcripts needs a directory argument.');
-    transcriptDirs.push(value);
-    args.splice(i, 2);
+const PROBE_DIR = path.dirname(fileURLToPath(import.meta.url));
+export const BASELINES_DIR = path.resolve(PROBE_DIR, '..', '..', 'baselines');
+
+// An inherited GIT_DIR/GIT_WORK_TREE (inside a git hook) would make git judge some other repo.
+export function runGit(args, cwd) {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env });
+  return r.error || r.status === null ? { status: null, out: '' } : { status: r.status, out: r.stdout.trim() };
+}
+
+function probeVersion(git) {
+  const head = git(['rev-parse', 'HEAD'], PROBE_DIR);
+  const dirty = git(['status', '--porcelain', '--', '.'], PROBE_DIR);
+  return { commit: head.status === 0 ? head.out : null, dirty: dirty.status === 0 ? dirty.out !== '' : null };
+}
+
+// The transcript store rolls (~30 days), so this per-ticket evidence is the only re-auditable copy of a run (tkt-65a9fa9ebd09).
+export function snapshot(m, context, perTicket, tickets, { now = new Date(), git = runGit } = {}) {
+  const worked = onBoard(perTicket, tickets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, t]) => ({
+      id,
+      project: tickets.get(id).project ?? null,
+      interactive: t.interactive,
+      humanTurns: t.humanTurns,
+      gateAnswers: t.gateAnswers,
+      reviewFindings: t.reviews.map((r) => r.findings),
+      transcripts: t.transcripts ?? [],
+    }));
+  return { control: 'PASS', generatedAt: now.toISOString(), probe: probeVersion(git), ...context, metrics: m, perTicket: worked };
+}
+
+const SNAPSHOT_NAME = /^[A-Za-z0-9][\w.-]*$/;
+
+// Private projects' ticket ids in a public repo: a bare name can only land in baselines/, and only
+// while the repo's own .gitignore (global excludes off) ignores it there. "Could not ask git" refuses.
+export function snapshotTarget(name, { dir = BASELINES_DIR, git = runGit } = {}) {
+  if (!SNAPSHOT_NAME.test(name)) throw new ProbeError(`--json takes a bare snapshot name, not a path: "${name}".`);
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${name}.json`);
+  const tmp = path.join(dir, `.${name}.json.${process.pid}.tmp`);
+  for (const p of [file, tmp]) {
+    const r = git(['-c', 'core.excludesFile=/dev/null', 'check-ignore', '-q', '--', path.basename(p)], dir);
+    if (r.status !== 0) throw new ProbeError(`${p} is not ignored by the repo .gitignore (check-ignore exit ${r.status}) — refusing to write private ticket ids.`);
   }
-  const unknown = args.find((a) => a.startsWith('-'));
-  if (unknown) throw new ProbeError(`unknown flag ${unknown}.`);
+  return { file, tmp };
+}
+
+// Temp + rename so a failed run never truncates the previous snapshot; 'wx' never follows a planted temp.
+export function writeAtomic({ file, tmp }, text, rename = renameSync) {
+  const fd = openSync(tmp, 'wx', 0o600);
+  try {
+    writeFileSync(fd, `${text}\n`);
+    closeSync(fd);
+    rename(tmp, file);
+  } catch (e) {
+    try { closeSync(fd); } catch { /* already closed */ }
+    unlinkSync(tmp);
+    throw e;
+  }
+}
+
+function parseArgs(argv) {
+  const transcriptDirs = [];
+  const positional = [];
+  let jsonName = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--transcripts' || a === '--json') {
+      const value = argv[++i];
+      if (!value || value.startsWith('-')) throw new ProbeError(a === '--json' ? '--json needs a snapshot name.' : '--transcripts needs a directory argument.');
+      if (a === '--transcripts') transcriptDirs.push(value);
+      else if (jsonName !== null) throw new ProbeError('--json given more than once.');
+      else jsonName = value;
+    } else if (a.startsWith('-')) throw new ProbeError(`unknown flag ${a}.`);
+    else positional.push(a);
+  }
+  return { transcriptDirs, positional, jsonName };
+}
+
+export function runCli(argv, { cwd = process.cwd(), env = process.env, home = os.homedir(), control = assertControl, baselinesDir = BASELINES_DIR, git = runGit } = {}) {
+  const { transcriptDirs, positional, jsonName } = parseArgs(argv);
+  const target = jsonName === null ? null : snapshotTarget(jsonName, { dir: baselinesDir, git });
 
   control();
 
-  const root = args[0] ?? (env.BOARD_DIR_OVERRIDE?.trim() || cwd);
+  const root = positional[0] ?? (env.BOARD_DIR_OVERRIDE?.trim() || cwd);
   const { tickets, unreadable } = scanBoard(root);
   const source = transcriptDirs.length ? { dirs: transcriptDirs, skipped: 0 } : defaultTranscriptDirs(home);
   const scan = scanTranscripts(source.dirs);
@@ -451,8 +528,12 @@ export function runCli(argv, { cwd = process.cwd(), env = process.env, home = os
   if (m.all.roundTrips.n === 0) throw new ProbeError('no interactive transcript worked a ticket on this board — refusing to report zero round-trips.');
   if (m.backlog.n === 0) throw new ProbeError('no hardpack backlog+todo tickets — refusing to report a 0% infra share.');
 
-  const report = formatReport(m, { files: scan.files, window: scan.window, dirs: source.dirs.length, skipped: source.skipped, unreadable, unattributed: scan.unattributed });
-  return { code: EXIT.MEASURED, report, metrics: m };
+  const context = { files: scan.files, window: scan.window, dirs: source.dirs.length, skipped: source.skipped, unreadable, unattributed: scan.unattributed };
+  const report = formatReport(m, context);
+  if (target === null) return { code: EXIT.MEASURED, report, metrics: m };
+  const snap = snapshot(m, { ...context, transcriptDirs: source.dirs }, scan.perTicket, tickets, { git });
+  writeAtomic(target, JSON.stringify(snap, null, 2));
+  return { code: EXIT.MEASURED, report: `${report}\n\nsnapshot: ${snap.perTicket.length} tickets written to ${target.file}`, metrics: m };
 }
 
 function isMainModule() {
