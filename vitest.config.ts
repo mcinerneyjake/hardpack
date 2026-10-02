@@ -38,6 +38,7 @@ const SUBPROCESS_SUITES = [
   'repoHygiene.test.mjs',
   'scripts/night-run.test.mjs',
   'scripts/probe/adoption-markers.test.mjs',
+  'scripts/probe/baseline-metrics.test.mjs',
   'scripts/probe/clean-room.test.mjs',
   'scripts/probe/hook-gate.test.mjs',
   'scripts/probe/merged-branches.test.mjs',
