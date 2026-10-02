@@ -159,6 +159,18 @@ describe('public repo carries no local identifiers', () => {
     expect(git(['ls-files', '--', '.claude/settings.local.json'], root).out, 'machine-local settings are tracked').toBe('');
   });
 
+  it('ignores baselines/ snapshots through the repo .gitignore alone, and never tracks one', () => {
+    const root = repoRoot();
+    const noGlobal = ['-c', 'core.excludesFile=/dev/null', 'check-ignore', '--no-index'];
+    const ignored = (file) => git([...noGlobal, '--', file], root).ok;
+
+    expect(ignored('baselines/x/per-ticket.json'), 'no repo rule ignores baselines/').toBe(true);
+    const source = git([...noGlobal, '-v', '--', 'baselines/x/per-ticket.json'], root).out;
+    expect(source.startsWith('.gitignore:'), `matched outside the repo .gitignore: ${source}`).toBe(true);
+    expect(ignored('agent/eval/baselines/fixture.json'), 'the rule is too broad — it ignores a nested baselines/').toBe(false);
+    expect(git(['ls-files', '--', ':(glob,icase)baselines/**'], root).out, 'a baseline snapshot is tracked').toBe('');
+  });
+
   // Controls: the matcher must fire on the real thing and stay silent on placeholders, or the clean
   // verdict above means nothing.
   it('flags a real account name, in either case, with or without a trailing slash', () => {

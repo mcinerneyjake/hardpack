@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -14,6 +14,8 @@ import {
   measure,
   assertControl,
   runCli,
+  snapshotTarget,
+  writeAtomic,
   SYNTHETIC_DIR,
   NIGHT_DIR,
 } from './baseline-metrics.mjs';
@@ -376,6 +378,86 @@ describe('runCli', () => {
     expect(() => runCli([root, '--transcripts', join(root, 'nope')])).toThrow(/not a directory/);
     expect(() => runCli([root, '--transcripts'])).toThrow(/needs a directory/);
     expect(() => runCli([root, '--bogus'])).toThrow(/unknown flag/);
+  });
+
+  describe('--json <name>', () => {
+    const snapshotFixture = () => {
+      healthy();
+      return transcripts({
+        'r.jsonl': [start('s', B), toolUse('r', 'Skill', { skill: 'code-review' }), result('r', 'Skill "code-review" completed.\n\nResult: prose only.')],
+        'off.jsonl': [human('x'), start('s', 'tkt-ffffffffffff')],
+      });
+    };
+    // Under the repo's ignored .tmp-test/, so the real check-ignore admits it — never the real baselines/.
+    const baselinesDir = () => join(root, 'baselines');
+    const opts = () => ({ baselinesDir: baselinesDir() });
+
+    it('writes the per-ticket evidence that recomputes the metrics object stored beside it', () => {
+      const dir = snapshotFixture();
+      const { code, report, metrics } = runCli([root, '--json', 'snap', '--transcripts', dir], opts());
+      const file = join(baselinesDir(), 'snap.json');
+      expect(code).toBe(EXIT.MEASURED);
+      expect(report).toContain('control: PASS');
+      expect(report).toContain(`snapshot: 2 tickets written to ${file}`);
+      const snap = JSON.parse(readFileSync(file, 'utf8'));
+      expect(snap.perTicket).toEqual([
+        { id: A, project: 'hardpack', interactive: true, humanTurns: 1, gateAnswers: 1, reviewFindings: [], transcripts: ['transcripts/s.jsonl'] },
+        { id: B, project: 'hardpack', interactive: true, humanTurns: 0, gateAnswers: 0, reviewFindings: [null], transcripts: ['transcripts/r.jsonl'] },
+      ]);
+      expect(snap.metrics).toEqual(JSON.parse(JSON.stringify(metrics)));
+      expect(snap.metrics.unmatchedIds).toBe(1);
+      expect(snap).toMatchObject({ control: 'PASS', files: 3, transcriptDirs: [dir] });
+      expect(snap.generatedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+      expect(snap.probe.commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(readdirSync(baselinesDir())).toEqual(['snap.json']);
+    });
+
+    it.each(['../x', 'a/b', '.hidden', '_x'])('refuses %j as a name, not a path, before measuring', (name) => {
+      const dir = snapshotFixture();
+      expect(() => runCli([root, '--json', name, '--transcripts', dir], opts())).toThrow(/bare snapshot name/);
+    });
+
+    it('refuses a dir the repo .gitignore does not ignore, and one git cannot answer for, writing nothing', () => {
+      const dir = snapshotFixture();
+      const probeDir = dirname(CLI);
+      expect(() => runCli([root, '--json', 'snap-refused', '--transcripts', dir], { baselinesDir: probeDir })).toThrow(/not ignored by the repo \.gitignore \(check-ignore exit 1\)/);
+      expect(existsSync(join(probeDir, 'snap-refused.json'))).toBe(false);
+      expect(() => runCli([root, '--json', 'snap', '--transcripts', dir], { baselinesDir: '/' })).toThrow(/check-ignore exit 128/);
+    });
+
+    it('refuses when git cannot run, before the measurement starts, and disables global excludes', () => {
+      board({ [A]: { title: 'x', status: 'backlog', project: 'hardpack' } });
+      const calls = [];
+      const git = (args) => { calls.push(args); return { status: null, out: '' }; };
+      expect(() => runCli([root, '--json', 'snap', '--transcripts', transcripts({})], { ...opts(), git })).toThrow(/check-ignore exit null/);
+      expect(calls[0].slice(0, 3)).toEqual(['-c', 'core.excludesFile=/dev/null', 'check-ignore']);
+    });
+
+    it('keeps the previous snapshot and leaves no temp when the write fails', () => {
+      const target = snapshotTarget('snap', { dir: baselinesDir() });
+      writeFileSync(target.file, 'previous evidence');
+      const rename = () => { throw new Error('EXDEV injected'); };
+      expect(() => writeAtomic(target, '{}', rename)).toThrow('EXDEV injected');
+      expect(readFileSync(target.file, 'utf8')).toBe('previous evidence');
+      expect(existsSync(target.tmp)).toBe(false);
+    });
+
+    it('never writes through a temp path planted before it, and leaves that path alone', () => {
+      const target = snapshotTarget('snap', { dir: baselinesDir() });
+      writeFileSync(target.tmp, 'planted');
+      expect(() => writeAtomic(target, '{}')).toThrow(/EEXIST/);
+      expect(readFileSync(target.tmp, 'utf8')).toBe('planted');
+      expect(existsSync(target.file)).toBe(false);
+    });
+
+    it('parses --json in any position and refuses a missing or repeated name', () => {
+      const dir = snapshotFixture();
+      expect(runCli(['--json', 'snap', '--transcripts', dir, root], opts()).code).toBe(EXIT.MEASURED);
+      expect(() => runCli(['--json', '--transcripts', dir, root], opts())).toThrow(/needs a snapshot name/);
+      expect(() => runCli([root, '--transcripts', dir, '--json'], opts())).toThrow(/needs a snapshot name/);
+      expect(() => runCli([root, '--json', 'a', '--json', 'b', '--transcripts', dir], opts())).toThrow(/more than once/);
+    });
   });
 
   it('falls back to BOARD_DIR_OVERRIDE when no root is given', () => {
