@@ -1153,6 +1153,66 @@ describe('POST /api/intake/apply', () => {
     expect(res.body).toMatchObject({ ...args, source: 'assisted', runId });
   });
 
+  // v0.31.0's autonomy/spec cross the apply boundary to disk; an assisted apply cannot grant afk (tkt-fc409e4c7ec9).
+  describe('autonomy and spec', () => {
+    const spec = 'mcinerneyjake/ticket-workflow:docs/specs/workflow-rewrite.md';
+
+    it('create: a spec ref persists from an assisted apply', async () => {
+      const runId = await proposeRunId('a spec ticket', [
+        { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Spec"}' } }] },
+        { content: 'Proposed.' },
+      ]);
+      const res = await request(server).post('/api/intake/apply')
+        .send({ action: 'create_ticket', runId, args: { title: 'Spec', autonomy: 'hitl', spec } });
+      expect(res.status).toBe(201);
+      expect(await tickets.getTicket(res.body.id)).toMatchObject({ autonomy: 'hitl', spec, source: 'assisted' });
+    });
+
+    it('update: a spec ref lands on an existing ticket from an assisted apply', async () => {
+      await seedTicket('tkt-specupd0001', 'Original');
+      const runId = await proposeRunId('link the spec', [
+        { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'update_ticket', arguments: '{"id":"tkt-specupd0001","title":"Original"}' } }] },
+        { content: 'Proposed.' },
+      ]);
+      const res = await request(server).post('/api/intake/apply')
+        .send({ action: 'update_ticket', runId, args: { id: 'tkt-specupd0001', spec } });
+      expect(res.status).toBe(200);
+      expect(await tickets.getTicket('tkt-specupd0001')).toMatchObject({ spec, runId });
+    });
+
+    // hitl is the read default and is never serialized, so only afk proves autonomy reached the file.
+    // An unknown runId is a plain write for every field, the same authority /api/tickets already has.
+    it('an unmetered apply may set afk, and it persists', async () => {
+      const res = await request(server).post('/api/intake/apply')
+        .send({ action: 'create_ticket', runId: 'run-human-afk', args: { title: 'Human afk', autonomy: 'afk' } });
+      expect(res.status).toBe(201);
+      expect(res.body.source).toBeNull();
+      expect(await tickets.getTicket(res.body.id)).toMatchObject({ autonomy: 'afk' });
+    });
+
+    it('refuses afk from an assisted (metered) apply with a 403, writing nothing', async () => {
+      const runId = await proposeRunId('an afk attempt', [
+        { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'create_ticket', arguments: '{"title":"Afk"}' } }] },
+        { content: 'Proposed.' },
+      ]);
+      const before = (await tickets.listTickets()).length;
+      const res = await request(server).post('/api/intake/apply')
+        .send({ action: 'create_ticket', runId, args: { title: 'Afk', autonomy: 'afk' } });
+      expect(res.status).toBe(403);
+      expect((await tickets.listTickets()).length).toBe(before);
+    });
+
+    it.each([['autonomy', 'unattended'], ['spec', 'a/b:../x.md']])(
+      'refuses an invalid %s with a 400',
+      async (key, value) => {
+        const res = await request(server).post('/api/intake/apply')
+          .send({ action: 'create_ticket', runId: 'run-bad-field', args: { title: 'Bad', [key]: value } });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(new RegExp(`^Invalid ${key}`));
+      },
+    );
+  });
+
   // Idempotency: a replayed apply with the same runId returns the same ticket — no duplicate, no double-meter.
   it('is idempotent on runId — a replay returns the same ticket, no duplicate', async () => {
     const runId = await proposeRunId('idempotent bug', [

@@ -10,7 +10,7 @@ const dirs = setupTempTicketDirs('completion');
 const mk = (over: Partial<Ticket> = {}): Ticket => ({
   id: 'tkt-1', title: 'T', type: 'task', priority: 'medium', status: 'done', order: 0,
   created: '2026-07-01T00:00:00.000Z', updated: '2026-07-02T00:00:00.000Z', body: '',
-  project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null,
+  project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null,
   ...over,
 });
 

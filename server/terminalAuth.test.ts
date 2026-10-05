@@ -21,7 +21,7 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
   return {
     id: 'tkt-0123456789ab', title: 'Do the thing', type: 'feature', priority: 'high',
     status: 'in-progress', order: 1, created: 'x', updated: 'x', body: '',
-    project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null,
+    project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null,
     ...overrides,
   };
 }

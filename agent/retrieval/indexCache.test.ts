@@ -23,7 +23,7 @@ class CountingEmbedder implements Embedder {
 function mk(id: string, title: string, updated = '2026-01-01'): Ticket {
   return {
     id, title, body: '', type: 'task', priority: 'medium', status: 'backlog',
-    order: 0, created: '', updated, project: null, blockers: [], parent: null, dueDate: null, assignee: null,
+    order: 0, created: '', updated, project: null, blockers: [], parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null,
   };
 }
 

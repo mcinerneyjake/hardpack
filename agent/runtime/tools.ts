@@ -45,8 +45,28 @@ function toChatTool(t: Tool): ChatTool {
   return { type: 'function', function: { name: t.name, description: t.description ?? '', parameters: t.inputSchema } };
 }
 
+// Human-owned (tkt-fc409e4c7ec9): afk admits unattended work and spec links a spec file, so the
+// untrusted-intake agent is never offered either and dispatchTool strips them (the 403 covers afk only).
+export const HUMAN_ONLY_FIELDS: ReadonlySet<string> = new Set(['autonomy', 'spec']);
+
+function withoutHumanOnlyFields(t: Tool): Tool {
+  const props = t.inputSchema.properties;
+  if (!props) return t;
+  const kept = Object.fromEntries(Object.entries(props).filter(([k]) => !HUMAN_ONLY_FIELDS.has(k)));
+  return { ...t, inputSchema: { ...t.inputSchema, properties: kept } };
+}
+
 function buildAgentTools(names: Set<string>): ChatTool[] {
-  return [...TOOLS.filter((t) => names.has(t.name)), SEARCH_BOARD_TOOL].map(toChatTool);
+  return [...TOOLS.filter((t) => names.has(t.name)).map(withoutHumanOnlyFields), SEARCH_BOARD_TOOL].map(toChatTool);
+}
+
+export function stripHumanOnlyFields(
+  args: Record<string, unknown> | undefined,
+): { args: Record<string, unknown> | undefined; dropped: string[] } {
+  if (!args) return { args, dropped: [] };
+  const dropped = Object.keys(args).filter((k) => HUMAN_ONLY_FIELDS.has(k));
+  if (dropped.length === 0) return { args, dropped };
+  return { args: Object.fromEntries(Object.entries(args).filter(([k]) => !HUMAN_ONLY_FIELDS.has(k))), dropped };
 }
 
 // The agent's advertised tools: whitelisted MCP tools + search_board. The create-only variant drops
@@ -114,10 +134,15 @@ export async function dispatchTool(
   const provenance: Provenance | undefined =
     runId && WRITE_TOOLS.has(name) ? { source: 'agent', runId } : undefined;
   let callArgs = args;
+  if (WRITE_TOOLS.has(name)) {
+    const { args: stripped, dropped } = stripHumanOnlyFields(args);
+    if (dropped.length > 0) console.warn(`[agent] ignored ${dropped.join(', ')} — human-only fields.`);
+    callArgs = stripped;
+  }
   // Only a string project needs constraining — gate the full-board listProjects() read on that, so a
   // create/update with no project (the common case) doesn't scan every ticket.
-  if (WRITE_TOOLS.has(name) && typeof args?.project === 'string') {
-    const { args: constrained, dropped } = constrainAgentProject(args, await listProjects());
+  if (WRITE_TOOLS.has(name) && typeof callArgs?.project === 'string') {
+    const { args: constrained, dropped } = constrainAgentProject(callArgs, await listProjects());
     // Loud, not silent: a dropped project is a corrected model hallucination the reviewer should see.
     // Path-agnostic wording — on create the ticket is unassigned, on update the existing project is kept.
     if (dropped !== null) console.warn(`[agent] ignored unknown project "${dropped}" — not a project on the board.`);

@@ -27,6 +27,9 @@ export const TYPES = ['bug', 'feature', 'task', 'chore'] as const;
 
 export const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 
+// Mirrors ticket-workflow #169. Nothing in hardpack reads it yet: night-run.mjs ignores autonomy.
+export const AUTONOMY = ['hitl', 'afk'] as const;
+
 // Provenance authorship: agent = autonomous CLI write; assisted = human-reviewed
 // agent draft. Human/MCP/HTTP write leaves source null. Distinct from
 // Document.source (a retrieval connector); this names the WRITER.
@@ -40,6 +43,7 @@ export type StatusId = (typeof STATUSES)[number]['id']
 export type TicketType = (typeof TYPES)[number]
 export type Priority = (typeof PRIORITIES)[number]
 export type TicketSource = (typeof SOURCES)[number]
+export type Autonomy = (typeof AUTONOMY)[number]
 
 // Embedded-terminal WS close code (server → client signal), in the WS application range 3000–4999.
 // 4500 = the container/session failed to START (docker down, image missing, dtach never ready). The
@@ -85,6 +89,9 @@ export type Ticket = {
   parent: string | null
   dueDate: string | null
   assignee: string | null
+  autonomy: Autonomy
+  // Non-null marks a spec ticket; slices are its children.
+  spec: string | null
   // Provenance — non-null only for agent-authored tickets. Optional so test
   // literals can omit it; normalize() always emits an explicit value. runId links
   // to the run log for per-ticket usage lookup.

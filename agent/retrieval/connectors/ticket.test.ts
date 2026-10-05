@@ -11,7 +11,7 @@ function mk(id: string, title: string, body = '', status: Ticket['status'] = 'ba
   return {
     id, title, body, type: 'task', priority: 'medium', status,
     order: 0, created: '', updated: '2026-01-01', project: null, blockers: [],
-    parent: null, dueDate: null, assignee: null,
+    parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null,
   };
 }
 

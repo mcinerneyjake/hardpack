@@ -72,6 +72,7 @@ describe('shared-constant parity with the ticket-workflow package', () => {
     ['CREATE_STATUS_IDS', local.CREATE_STATUS_IDS, pkg.CREATE_STATUS_IDS],
     ['TYPES', local.TYPES, pkg.TYPES],
     ['PRIORITIES', local.PRIORITIES, pkg.PRIORITIES],
+    ['AUTONOMY', local.AUTONOMY, pkg.AUTONOMY],
     ['SOURCES', local.SOURCES, pkg.SOURCES],
     ['STEPS', local.STEPS, pkg.STEPS],
     ['STEP_IDS', local.STEP_IDS, pkg.STEP_IDS],
@@ -101,6 +102,7 @@ describe('shared-constant parity with the ticket-workflow package', () => {
     expectTypeOf<local.TicketType>().toEqualTypeOf<pkg.TicketType>();
     expectTypeOf<local.Priority>().toEqualTypeOf<pkg.Priority>();
     expectTypeOf<local.TicketSource>().toEqualTypeOf<pkg.TicketSource>();
+    expectTypeOf<local.Autonomy>().toEqualTypeOf<pkg.Autonomy>();
     expectTypeOf<local.StepId>().toEqualTypeOf<pkg.StepId>();
     expectTypeOf<local.StepState>().toEqualTypeOf<pkg.StepState>();
     expectTypeOf<local.Ticket>().toEqualTypeOf<pkg.Ticket>();
