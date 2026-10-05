@@ -39,6 +39,8 @@ const ticketFieldArgs: Record<keyof TicketFields, z.ZodType> = {
   dueDate: anyValue,
   assignee: anyValue,
   blockers: anyValue,
+  autonomy: anyValue,
+  spec: anyValue,
 };
 
 // POST /api/intake/apply. args = the user's final form fields (validated by the

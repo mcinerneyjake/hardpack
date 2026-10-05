@@ -7,7 +7,7 @@ function ticket(over: Partial<Ticket> = {}): Ticket {
   return {
     id: 'tkt-1', title: 'Login broken', type: 'bug', priority: 'medium', status: 'backlog',
     order: 1, created: '', updated: '', body: 'old body', project: null, blockers: [],
-    parent: null, dueDate: null, assignee: null, ...over,
+    parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null, ...over,
   };
 }
 

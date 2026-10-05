@@ -7,6 +7,7 @@ import {
   CREATE_ONLY_TOOL_NAMES,
   dispatchTool,
   constrainAgentProject,
+  HUMAN_ONLY_FIELDS,
 } from './tools.js';
 import { DocumentIndex, type Embedder, type Document } from '../retrieval/retrieval.js';
 import { TOOLS } from '../../mcp/handlers.js';
@@ -75,11 +76,24 @@ describe('AGENT_TOOLS', () => {
     }
   });
 
-  it('carries the exact MCP description + inputSchema into parameters (lossless adapter)', () => {
+  it('carries the exact MCP description + inputSchema into parameters, minus the human-only fields', () => {
     const mcpCreate = TOOLS.find((t) => t.name === 'create_ticket');
     const create = AGENT_TOOLS.find((t) => t.function.name === 'create_ticket');
     expect(create?.function.description).toBe(mcpCreate?.description);
-    expect(create?.function.parameters).toEqual(mcpCreate?.inputSchema);
+    const rest = Object.fromEntries(
+      Object.entries(mcpCreate?.inputSchema.properties ?? {}).filter(([k]) => !HUMAN_ONLY_FIELDS.has(k)),
+    );
+    expect(create?.function.parameters).toEqual({ ...mcpCreate?.inputSchema, properties: rest });
+  });
+
+  // Control: upstream must still advertise them, or the strip below is untested by construction.
+  it.each(['create_ticket', 'update_ticket'])('never offers %s the human-only fields upstream advertises', (name) => {
+    const upstream = Object.keys(TOOLS.find((t) => t.name === name)?.inputSchema.properties ?? {});
+    const offered = Object.keys(AGENT_TOOLS.find((t) => t.function.name === name)?.function.parameters.properties ?? {});
+    for (const f of HUMAN_ONLY_FIELDS) {
+      expect(upstream).toContain(f);
+      expect(offered).not.toContain(f);
+    }
   });
 
   it('search_board requires a query', () => {
@@ -353,6 +367,30 @@ describe('dispatchTool — project constraint (create/update)', () => {
     const after = await getTicket(seeded.id);
     expect(after.project).toBe('kanban'); // unknown project omitted → existing kept
     expect(after.priority).toBe('high');  // the valid field still applied
+  });
+});
+
+describe('dispatchTool — human-only fields (create/update)', () => {
+  const spec = 'mcinerneyjake/ticket-workflow:docs/specs/workflow-rewrite.md';
+  function idFrom(text: string): string {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed === 'object' && parsed !== null && 'id' in parsed && typeof parsed.id === 'string') return parsed.id;
+    throw new Error(`result had no id: ${text}`);
+  }
+
+  // Without the strip, a provenance-stamped afk is a 403 and the metered create files nothing.
+  it('drops a model-proposed afk and spec, so a stamped create still lands', async () => {
+    const index = await DocumentIndex.build(embedder, []);
+    const res = await dispatchTool('create_ticket', { title: 'Model afk', autonomy: 'afk', spec }, index, 'run-afk');
+    expect(res.isError).toBeFalsy();
+    expect(await getTicket(idFrom(res.content[0].text))).toMatchObject({ autonomy: 'hitl', spec: null, source: 'agent' });
+  });
+
+  it('cannot clear a human-set spec or revoke afk on update, while other fields apply', async () => {
+    const seeded = await createTicket({ title: 'Human owned', autonomy: 'afk', spec, project: 'kanban' });
+    const index = await DocumentIndex.build(embedder, []);
+    await dispatchTool('update_ticket', { id: seeded.id, autonomy: 'hitl', spec: null, project: 'kanban', priority: 'high' }, index, 'run-upd');
+    expect(await getTicket(seeded.id)).toMatchObject({ autonomy: 'afk', spec, priority: 'high' });
   });
 });
 

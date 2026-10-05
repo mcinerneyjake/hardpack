@@ -699,6 +699,8 @@ describe('pinned ticket-workflow build: summarize() output is enum-driven', () =
     parent: null,
     dueDate: null,
     assignee: null,
+    autonomy: 'hitl',
+    spec: null,
     ...over,
   });
 

@@ -5,7 +5,7 @@ import type { Ticket } from '../../shared/constants.js';
 const mk = (id: string): Ticket => ({
   id, title: id, type: 'task', priority: 'medium', status: 'todo', order: 0,
   created: '', updated: '', body: '', project: null, blockers: [],
-  parent: null, dueDate: null, assignee: null,
+  parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null,
 });
 
 describe('resolveTicket', () => {

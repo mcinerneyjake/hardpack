@@ -10,7 +10,7 @@ import type { Ticket } from '../../shared/constants.js';
 const mk = (over: Partial<Ticket> = {}): Ticket => ({
   id: 'tkt-1', title: 'Title', type: 'feature', priority: 'medium', status: 'backlog', order: 0,
   created: '2026-07-01T00:00:00.000Z', updated: '2026-07-10T00:00:00.000Z', body: 'Body',
-  project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null,
+  project: 'kanban', blockers: [], parent: null, dueDate: null, assignee: null, autonomy: 'hitl', spec: null,
   ...over,
 });
 
