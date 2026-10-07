@@ -7,17 +7,20 @@
 // covered by the package's own viewer: `npx ticket-workflow show <id>`.
 import { readFileSync } from 'node:fs';
 import { getTicket, updateTicket } from '../server/tickets';
-import type { TicketPatch } from 'ticket-workflow';
+// AUTONOMY from the package, beside its predicate, so the error lists exactly what isAutonomy accepts.
+import { AUTONOMY, isAutonomy, isSpecRef, SPEC_REF_HINT, type TicketPatch } from 'ticket-workflow';
 import { isStatusId, isTicketType, isPriority, STATUS_IDS, TYPES, PRIORITIES } from '../shared/constants';
 
-const SETTABLE_FIELDS = ['status', 'type', 'priority', 'project', 'assignee', 'dueDate', 'parent'] as const;
+const SETTABLE_FIELDS = [
+  'status', 'type', 'priority', 'project', 'assignee', 'dueDate', 'parent', 'autonomy', 'spec',
+] as const;
 type SettableField = (typeof SETTABLE_FIELDS)[number];
 
 const USAGE = `Usage:
   npm run ticket -- set <id> <field> <value>    ${SETTABLE_FIELDS.join(' | ')}
   npm run ticket -- append <id> <file|->        append markdown to the body (never overwrites)
 
-Pass the literal "null" to clear project/assignee/dueDate/parent.
+Pass the literal "null" to clear project/assignee/dueDate/parent/spec.
 Read a ticket with the package viewer: npx ticket-workflow show <id>`;
 
 class UsageError extends Error {}
@@ -39,7 +42,16 @@ function patchFor(field: SettableField, value: string): TicketPatch {
     if (!isPriority(value)) throw new UsageError(`invalid priority "${value}" — expected one of: ${PRIORITIES.join(', ')}`);
     return { priority: value };
   }
-  // The remaining fields are free-form in the schema; "null" is the only way argv can express empty.
+  if (field === 'autonomy') {
+    if (!isAutonomy(value)) throw new UsageError(`invalid autonomy "${value}" — expected one of: ${AUTONOMY.join(', ')}`);
+    return { autonomy: value };
+  }
+  if (field === 'spec') {
+    if (value === 'null') return { spec: null };
+    if (!isSpecRef(value)) throw new UsageError(`invalid spec "${value}" — ${SPEC_REF_HINT}`);
+    return { spec: value };
+  }
+  // Passed through unchecked here (the service still validates dueDate); "null" is the only way argv can express empty.
   return { [field]: value === 'null' ? null : value };
 }
 

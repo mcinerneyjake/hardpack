@@ -101,7 +101,7 @@ makes them unselectable as work. That array caps at 20 with the true count in `n
 `unassigned.length` is a floor, not a count. Both are board-wide and never narrowed by your filters.
 
 **MCP down → `npm run ticket`**, a fallback, not a second everyday path: `set <id> <field> <value>`
-(`status | type | priority | project | assignee | dueDate | parent`), `append <id> <file>`, and
+(the settable fields: `npm run ticket -- --help`), `append <id> <file>`, and
 `npx ticket-workflow show <id>` to read a ticket back — which you need, because `update_ticket` can
 error on response size *after* the write has already landed. It calls `appendBody` under an **in-process-only** lock, so a full-body `body`
 write can still lose a concurrent edit — use `appendBody` regardless. The `tickets/.history/` snapshot
