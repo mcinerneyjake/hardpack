@@ -5,6 +5,7 @@ import {
   confirmedRegressions, filePasses, gradeCase, hiddenPass, mergeGoldRuns, regressionCandidates, summarizeTrials,
   type CaseGrade, type VitestRun,
 } from './grading.js';
+import { statementSha256 } from './interface.js';
 import { applyScreen, type Screen, type ScreenedOut } from './screen.js';
 import { NETWORK_RESIDUAL, promptHash } from './session.js';
 
@@ -54,6 +55,10 @@ interface Drop { ok: false; reason: string }
 export interface CodingEvalOptions {
   trials: number;
   humanScreen: Screen;
+  // id → the task statement text each session will be given; hashed here, never passed pre-hashed.
+  statements: ReadonlyMap<string, string>;
+  // Tests of unrelated behaviour lower it; the CLI never passes it.
+  minScoredCases?: number;
 }
 
 // A case failing a control is dropped and named: its hidden tests cannot tell solved from unsolved.
@@ -106,8 +111,19 @@ export function sessionDidNotRun(s: SessionOutcome): boolean {
 
 // Seen on the first real trial (tkt-4251671dcb5a): a valid design failed hidden tests pinning gold's strings.
 export const UNDERSPECIFICATION =
-  'Screened (screen.json): only cases a human judged passable by a body-faithful solution are scored. A ' +
-  '"partly" case still asserts some of the gold PR\'s choices, so FAIL_TO_PASS remains a floor.';
+  'Screened (screen.json): only cases a human judged passable from the exact statement a session sees (body + ' +
+  'interface, bound by sha256) are scored. A "partly" case still asserts some of the gold PR\'s choices, so FAIL_TO_PASS remains a floor.';
+
+// Below it a rate is noise: the binomial SE is ≥ ~16 pts at p = 0.5, and at n=1 it reads ± 0.0.
+export const MIN_SCORED_CASES = 10;
+
+export function belowMinimumN(n: number, min = MIN_SCORED_CASES): string {
+  return `n=${n} case(s), below the minimum of ${min} — no pass rate or SE is reported.`;
+}
+
+export function hashStatements(statements: ReadonlyMap<string, string>): Map<string, string> {
+  return new Map([...statements].map(([id, text]) => [id, statementSha256(text)]));
+}
 
 // The harness itself failed (a test slot never freed, a git read of the case commit): never a score.
 export class InstrumentFault extends Error {}
@@ -146,7 +162,7 @@ function fmtUsd(v: number): string {
   return `$${v.toFixed(2)}`;
 }
 
-function summarize(results: CodingResult[], screenedOut: readonly ScreenedOut[]): { metrics: Record<string, number>; lines: string[] } {
+function summarize(results: CodingResult[], screenedOut: readonly ScreenedOut[], minScored: number): { metrics: Record<string, number>; lines: string[] } {
   const scored = results.filter((r): r is Extract<CodingResult, { status: 'scored' }> => r.status === 'scored');
   const dropped = results.filter((r): r is Extract<CodingResult, { status: 'dropped' }> => r.status === 'dropped');
   const lines: string[] = [];
@@ -176,8 +192,14 @@ function summarize(results: CodingResult[], screenedOut: readonly ScreenedOut[])
     lines.push('  NO case survived its controls — no rate is reported.');
     return { metrics: { scored: 0, dropped: dropped.length, screenedOut: screenedOut.length }, lines };
   }
+  const spend = { costUsdFloor: totalCost, unreportedCostSessions: unreportedCost, wallMinutes: wallMs / 60000 };
+  if (scored.length < minScored) {
+    lines.push(`  ${belowMinimumN(scored.length, minScored)} The per-case marks above are the result.`);
+    return { metrics: { scored: scored.length, dropped: dropped.length, screenedOut: screenedOut.length, ...spend }, lines };
+  }
   const s = summarizeTrials(scored.map((r) => r.trials.map((t) => t.grade.resolved)));
   lines.push(`  pass rate ${(s.passRate * 100).toFixed(1)}% ± ${(s.standardError * 100).toFixed(1)} pts (1 SE, n=${s.cases}, k=${s.trials})`);
+  if (s.standardError === 0) lines.push('  ± 0.0 is the binomial formula at a rate of exactly 0 or 1, not a claim of precision.');
   const metrics: Record<string, number> = {
     scored: s.cases,
     dropped: dropped.length,
@@ -186,9 +208,7 @@ function summarize(results: CodingResult[], screenedOut: readonly ScreenedOut[])
     passRate: s.passRate,
     standardError: s.standardError,
     passAtK: s.passAtK,
-    costUsdFloor: totalCost,
-    unreportedCostSessions: unreportedCost,
-    wallMinutes: wallMs / 60000,
+    ...spend,
   };
   if (s.passHatK !== null) metrics.passHatK = s.passHatK;
   return { metrics, lines };
@@ -202,7 +222,11 @@ export function evaluateCoding(
   if (!Number.isInteger(opts.trials) || opts.trials < 1) {
     throw new Error(`coding-eval: trials must be a positive integer, got ${opts.trials}`);
   }
-  const { scorable, screenedOut } = applyScreen(cases, opts.humanScreen);
+  const minScored = opts.minScoredCases ?? MIN_SCORED_CASES;
+  if (!Number.isInteger(minScored) || minScored < 1) {
+    throw new Error(`coding-eval: minScoredCases must be a positive integer, got ${minScored}`);
+  }
+  const { scorable, screenedOut } = applyScreen(cases, opts.humanScreen, hashStatements(opts.statements));
   if (scorable.length === 0) {
     return Promise.reject(new Error(`coding-eval: all ${cases.length} case(s) are screened out — there is nothing to score. ${screenedOut.map((r) => `${r.ticketId}: ${r.reason}`).join('; ')}`));
   }
@@ -237,6 +261,6 @@ export function evaluateCoding(
       await deps.record(result);
       return result;
     },
-    summarize: (results) => summarize(results, screenedOut),
+    summarize: (results) => summarize(results, screenedOut, minScored),
   });
 }

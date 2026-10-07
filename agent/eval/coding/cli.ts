@@ -7,9 +7,9 @@ import {
   classifyChangedFiles, firstStartedAt, parseCaseManifest, pickFrozenSnapshot, prNumberFromSubject,
   ticketIdFromBranch, type CodingCase,
 } from './cases.js';
-import { evaluateCoding, runControls } from './codingEval.js';
+import { belowMinimumN, evaluateCoding, hashStatements, MIN_SCORED_CASES, runControls } from './codingEval.js';
 import { assertContaminationCorpus } from './contamination.js';
-import { exec, readContaminationCorpus, realDeps, screenCase, sha256 } from './realDeps.js';
+import { exec, readContaminationCorpus, readTaskStatement, realDeps, screenCase, sha256 } from './realDeps.js';
 import { RUN_REPORT } from './layout.js';
 import { DEFAULT_KEEP_RUNS, pruneRuns, type PruneResult } from './retention.js';
 import { applyScreen, parseScreen } from './screen.js';
@@ -19,8 +19,9 @@ import { applyScreen, parseScreen } from './screen.js';
 //
 //   npm run eval:coding -- --select 20        build agent/eval/coding/cases.json from merged PRs
 //   npm run eval:coding -- --controls-only    run every pre-session check, spend nothing
+//   npm run eval:coding -- --statement <id>   print the exact task statement a session sees, for screening
 //   npm run eval:coding -- --prune [--keep n] drop old runs' fixture trees, keep their reports
-//   npm run eval:coding -- [--trials k] [--budget usd] [--cases id,id] [--keep n]
+//   npm run eval:coding -- [--trials k] [--budget usd] [--cases id,id] [--keep n] [--allow-small-n]
 
 export const MANIFEST_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cases.json');
 export const SCREEN_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'screen.json');
@@ -39,13 +40,15 @@ interface Args {
   trials: number;
   budget: number;
   only: string[] | null;
+  statement: string | null;
+  allowSmallN: boolean;
   prune: boolean;
   keep: number;
 }
 
 function parseArgs(argv: string[]): Args {
   const a: Args = {
-    select: null, controlsOnly: false, trials: 1, budget: DEFAULT_BUDGET_USD, only: null,
+    select: null, controlsOnly: false, trials: 1, budget: DEFAULT_BUDGET_USD, only: null, statement: null, allowSmallN: false,
     prune: false, keep: DEFAULT_KEEP_RUNS,
   };
   const num = (flag: string, v: string | undefined): number => {
@@ -60,12 +63,17 @@ function parseArgs(argv: string[]): Args {
     else if (f === '--trials') a.trials = num(f, argv[++i]);
     else if (f === '--budget') a.budget = num(f, argv[++i]);
     else if (f === '--cases') a.only = (argv[++i] ?? '').split(',').filter(Boolean);
+    else if (f === '--statement') a.statement = argv[++i] ?? '';
+    else if (f === '--allow-small-n') a.allowSmallN = true;
     else if (f === '--prune') a.prune = true;
     else if (f === '--keep') a.keep = num(f, argv[++i]);
     else throw new Error(`unknown argument: ${f}`);
   }
   if (a.select !== null && (a.controlsOnly || a.only || a.prune)) throw new Error('--select builds the manifest; it takes no other mode');
   if (a.prune && (a.controlsOnly || a.only)) throw new Error('--prune reclaims disk; it takes no other mode');
+  if (a.statement !== null && (a.select !== null || a.prune || a.controlsOnly || a.only)) {
+    throw new Error('--statement prints one case\'s task statement; it takes no other mode');
+  }
   return a;
 }
 
@@ -183,16 +191,37 @@ async function main(): Promise<void> {
   }
 
   let cases = parseCaseManifest(await fs.readFile(MANIFEST_PATH, 'utf8'));
+  if (args.statement !== null) {
+    const c = cases.find((x) => x.ticketId === args.statement);
+    if (!c) throw new Error(`--statement names ${args.statement || 'nothing'}, which is not in the manifest`);
+    const text = await readTaskStatement(repoRoot, boardDir, c);
+    process.stdout.write(text);
+    process.stderr.write(`statementSha256: ${sha256(text)}\n`);
+    return;
+  }
   const humanScreen = parseScreen(await fs.readFile(SCREEN_PATH, 'utf8'));
   if (args.only) {
     const unknown = args.only.filter((id) => !cases.some((c) => c.ticketId === id));
     if (unknown.length) throw new Error(`--cases names ids not in the manifest: ${unknown.join(', ')}`);
     cases = cases.filter((c) => args.only?.includes(c.ticketId));
   }
+  // Only for cases a verdict could score: one unbuildable unscorable case must not abort the run.
+  const statements = new Map<string, string>();
+  for (const c of cases.filter((x) => humanScreen.get(x.ticketId)?.scorable)) {
+    try {
+      statements.set(c.ticketId, await readTaskStatement(repoRoot, boardDir, c));
+    } catch (err) {
+      process.stdout.write(`! ${c.ticketId}: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
   // Before any fixture, control or prune: a screened-out case is never touched in any mode.
-  const { scorable, screenedOut } = applyScreen(cases, humanScreen);
+  const { scorable, screenedOut } = applyScreen(cases, humanScreen, hashStatements(statements));
   for (const r of screenedOut) process.stdout.write(`  [SKIP] ${r.ticketId}  ${r.reason}\n`);
   if (scorable.length === 0) throw new Error(`all ${cases.length} case(s) are screened out — nothing to control or score.`);
+  // scored ≤ scorable, so below the floor no rate can come back: the spend would buy marks alone.
+  if (!args.controlsOnly && scorable.length < MIN_SCORED_CASES && !args.allowSmallN) {
+    throw new Error(`${belowMinimumN(scorable.length)} Refusing to spend on a run that cannot report one; pass --allow-small-n for per-case marks.`);
+  }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const evalRoot = evalRootFor(repoRoot);
@@ -202,6 +231,7 @@ async function main(): Promise<void> {
     maxBudgetUsd: args.budget,
     sessionCapMs: SESSION_CAP_MS,
     corpusControlId: CORPUS_CONTROL_ID,
+    statements,
     log: (l) => process.stdout.write(`${l}\n`),
   });
   process.stdout.write(`Run directory: ${runDir}\n`);
@@ -217,9 +247,10 @@ async function main(): Promise<void> {
   // and still before the first metered session. `protect` keeps this run's own dir out of the sweep.
   reportPrune(await pruneRuns(evalRoot, { keep: args.keep, protect: stamp }), args.keep);
 
+  if (scorable.length < MIN_SCORED_CASES) process.stdout.write(`! ${belowMinimumN(scorable.length)}\n`);
   const sessions = scorable.length * args.trials;
   process.stdout.write(`Up to ${sessions} session(s) at a $${args.budget} cap each — spend bounded by $${(sessions * args.budget).toFixed(0)}.\n`);
-  const report = await evaluateCoding(cases, deps, { trials: args.trials, humanScreen });
+  const report = await evaluateCoding(cases, deps, { trials: args.trials, humanScreen, statements });
   process.stdout.write(`${formatReport(report)}\n`);
   await fs.writeFile(path.join(runDir, RUN_REPORT), `${JSON.stringify(report, null, 2)}\n`);
 }

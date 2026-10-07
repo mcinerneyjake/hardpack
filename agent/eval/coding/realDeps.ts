@@ -11,6 +11,7 @@ import {
   assertContaminationCorpus, distinctiveIdentifiers, screenContamination, type CorpusFile,
 } from './contamination.js';
 import { parseVitestJson, type VitestRun } from './grading.js';
+import { deriveInterface, taskStatement, type ReadAt } from './interface.js';
 import {
   assertNoCentralBoard, foreignAncestorClaudeMds, mcpConfig, replayPrompt, rewriteUserSettings, sanitizedEnv,
   sessionArgs, sessionResult, type UserSettings,
@@ -90,6 +91,8 @@ export interface RealDepsConfig {
   sessionCapMs: number;
   // A ticket id the contamination corpus is known to cite: the screen's positive control.
   corpusControlId: string;
+  // id → the task statement, built once by the caller: the text screened is the text written, by construction.
+  statements: ReadonlyMap<string, string>;
   home?: string;
   log: (line: string) => void;
 }
@@ -168,20 +171,47 @@ export function sha256(text: string | Buffer): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
+// ls-tree first: `git show` exits 128 for a missing path and for a bad revision alike. `-z` so a
+// non-ASCII path is not quoted into a mismatch; a tree at the path is no module file.
+export function gitReadAt(repoRoot: string): ReadAt {
+  const run = (args: string[]) => exec('git', args, { cwd: repoRoot, env: sanitizedEnv(process.env) });
+  return async (rev, file) => {
+    const ls = await run(['ls-tree', '-z', rev, '--', file]);
+    if (ls.code !== 0) throw new Error(`coding-eval: git ls-tree ${rev} -- ${file} failed: ${ls.err.trim()}`);
+    const entries = ls.out.split('\0').filter(Boolean);
+    if (entries.length === 0) return null;
+    const m = /^(\d+) (\w+) [0-9a-f]+\t([\s\S]*)$/.exec(entries[0]);
+    if (entries.length !== 1 || !m || m[3] !== file) {
+      throw new Error(`coding-eval: git ls-tree ${rev} -- ${file} printed an unexpected entry: ${JSON.stringify(ls.out)}`);
+    }
+    if (m[2] === 'tree') return null;
+    // A symlink's blob is its target path, which would read as a module exporting nothing.
+    if (m[2] !== 'blob' || m[1] === '120000') throw new Error(`coding-eval: ${rev}:${file} is not a regular file (mode ${m[1]}, ${m[2]})`);
+    const show = await run(['show', `${rev}:${file}`]);
+    if (show.code !== 0) throw new Error(`coding-eval: git show ${rev}:${file} failed: ${show.err.trim()}`);
+    return show.out;
+  };
+}
+
+async function readFrozenBody(boardDir: string, c: CodingCase): Promise<string> {
+  const file = path.join(boardDir, 'tickets', '.history', c.ticketId, c.snapshot);
+  const text = await fs.readFile(file, 'utf8');
+  if (sha256(text) !== c.bodySha256) {
+    throw new Error(`coding-eval: frozen body for ${c.ticketId} (${file}) no longer matches the manifest's hash — the task statement changed, so this is not the case that was selected.`);
+  }
+  return text;
+}
+
+// Exactly what the session's scratch board holds, so `--statement` shows a screener the same text.
+export async function readTaskStatement(repoRoot: string, boardDir: string, c: CodingCase): Promise<string> {
+  return asTodo(taskStatement(await readFrozenBody(boardDir, c), await deriveInterface(c, gitReadAt(repoRoot))));
+}
+
 export function realDeps(cfg: RealDepsConfig): CodingDeps {
   const home = cfg.home ?? os.homedir();
   const git = (args: string[], cwd = cfg.repoRoot, input?: string | Buffer) => mustExec('git', args, { cwd, input, env: sanitizedEnv(process.env) });
   const pristine = new Map<string, Promise<string>>();
   let corpus: CorpusFile[] | null = null;
-
-  async function frozenBody(c: CodingCase): Promise<string> {
-    const file = path.join(cfg.boardDir, 'tickets', '.history', c.ticketId, c.snapshot);
-    const text = await fs.readFile(file, 'utf8');
-    if (sha256(text) !== c.bodySha256) {
-      throw new Error(`coding-eval: frozen body for ${c.ticketId} (${file}) no longer matches the manifest's hash — the task statement changed, so this is not the case that was selected.`);
-    }
-    return text;
-  }
 
   // One install per case, cloned for every control and trial, so each tree starts identical.
   async function buildPristine(c: CodingCase): Promise<string> {
@@ -214,7 +244,9 @@ export function realDeps(cfg: RealDepsConfig): CodingDeps {
     await assertFixtureShape(dir);
     const board = path.join(parent, 'board');
     await fs.mkdir(path.join(board, 'tickets'), { recursive: true });
-    await fs.writeFile(path.join(board, 'tickets', `${c.ticketId}.md`), asTodo(await frozenBody(c)));
+    const statement = cfg.statements.get(c.ticketId);
+    if (statement === undefined) throw new InstrumentFault(`coding-eval: no task statement was built for ${c.ticketId}`);
+    await fs.writeFile(path.join(board, 'tickets', `${c.ticketId}.md`), statement);
     return dir;
   }
 

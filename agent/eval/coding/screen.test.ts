@@ -7,8 +7,10 @@ import { applyScreen, parseScreen } from './screen.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SHA = 'c'.repeat(64);
+const ST = 'e'.repeat(64);
+const STMTS: ReadonlyMap<string, string> = new Map(['1', '2', '3', '4'].map((n) => [`tkt-00000000000${n}`, ST]));
 
-const entry = (o: Record<string, unknown> = {}) => ({ bodySha256: SHA, commit: 'a'.repeat(40), testFiles: ['h.test.ts'], verdict: 'partly', scorable: true, note: 'helper name only', ...o });
+const entry = (o: Record<string, unknown> = {}) => ({ bodySha256: SHA, commit: 'a'.repeat(40), testFiles: ['h.test.ts'], statementSha256: ST, verdict: 'partly', scorable: true, note: 'helper name only', ...o });
 const raw = (cases: unknown) => JSON.stringify({ cases });
 
 const mk = (id: string, o: Partial<CodingCase> = {}): CodingCase => ({
@@ -44,6 +46,8 @@ describe('parseScreen', () => {
     ['a string scorable', raw({ 'tkt-000000000001': entry({ scorable: 'false' }) }), /boolean/],
     ['a "no" marked scorable', raw({ 'tkt-000000000001': entry({ verdict: 'no', scorable: true }) }), /cannot be scorable/],
     ['a "yes" marked unscorable', raw({ 'tkt-000000000001': entry({ verdict: 'yes', scorable: false }) }), /must be scorable/],
+    ['a missing statementSha256', raw({ 'tkt-000000000001': entry({ statementSha256: undefined }) }), /statementSha256/],
+    ['a short statementSha256', raw({ 'tkt-000000000001': entry({ statementSha256: 'abc' }) }), /statementSha256/],
     ['a blank note', raw({ 'tkt-000000000001': entry({ note: '  ' }) }), /note/],
   ])('rejects %s', (_label, input, err) => {
     expect(() => parseScreen(input)).toThrow(err);
@@ -72,6 +76,7 @@ describe('applyScreen — fails closed', () => {
     const { scorable, screenedOut } = applyScreen(
       [mk('tkt-000000000001'), mk('tkt-000000000002'), mk('tkt-000000000003', { bodySha256: 'd'.repeat(64) }), mk('tkt-000000000004')],
       screen,
+      STMTS,
     );
     expect(scorable.map((c) => c.ticketId)).toEqual(['tkt-000000000001']);
     expect(screenedOut).toEqual([
@@ -86,14 +91,24 @@ describe('applyScreen — fails closed', () => {
     ['an added hidden test file', { testFiles: ['h.test.ts', 'k.test.ts'] }],
     ['a renamed hidden test file', { testFiles: ['k.test.ts'] }],
   ])('treats %s as a stale screen', (_label, o) => {
-    const { scorable, screenedOut } = applyScreen([mk('tkt-000000000001', o)], screen);
+    const { scorable, screenedOut } = applyScreen([mk('tkt-000000000001', o)], screen, STMTS);
     expect(scorable).toEqual([]);
     expect(screenedOut[0].reason).toMatch(/stale screen/);
   });
 
+  it.each([
+    ['a statement that changed since it was judged', new Map([['tkt-000000000001', 'f'.repeat(64)]]), /^stale screen — judged a different task statement/],
+    ['no statement built for the case', new Map<string, string>(), /^no task statement could be built/],
+  ])('screens out %s, even for a "yes"', (_label, statements, reason) => {
+    const s = parseScreen(raw({ 'tkt-000000000001': entry({ verdict: 'yes', scorable: true }) }));
+    const { scorable, screenedOut } = applyScreen([mk('tkt-000000000001')], s, statements);
+    expect(scorable).toEqual([]);
+    expect(screenedOut[0].reason).toMatch(reason);
+  });
+
   it('ignores testFiles order', () => {
     const s = parseScreen(raw({ 'tkt-000000000001': entry({ testFiles: ['b.test.ts', 'a.test.ts'] }) }));
-    expect(applyScreen([mk('tkt-000000000001', { testFiles: ['a.test.ts', 'b.test.ts'] })], s).scorable).toHaveLength(1);
+    expect(applyScreen([mk('tkt-000000000001', { testFiles: ['a.test.ts', 'b.test.ts'] })], s, STMTS).scorable).toHaveLength(1);
   });
 });
 
@@ -101,8 +116,10 @@ describe('the committed screen covers the committed manifest', () => {
   const cases = parseCaseManifest(fs.readFileSync(path.join(here, 'cases.json'), 'utf8'));
   const screen = parseScreen(fs.readFileSync(path.join(here, 'screen.json'), 'utf8'));
 
-  it('has a current (non-stale) verdict for every case', () => {
-    const { screenedOut } = applyScreen(cases, screen);
+  // Statement hashes need the gitignored board snapshots, so CI checks the rest of the binding only.
+  it('binds a verdict to every case\'s current body, commit and hidden tests', () => {
+    const asJudged = new Map([...screen].map(([id, e]) => [id, e.statementSha256]));
+    const { screenedOut } = applyScreen(cases, screen, asJudged);
     expect(screenedOut.filter((r) => !r.reason.startsWith('underspecified'))).toEqual([]);
   });
 

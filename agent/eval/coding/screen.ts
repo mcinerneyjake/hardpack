@@ -10,8 +10,10 @@ export interface ScreenEntry {
   bodySha256: string;
   commit: string;
   testFiles: string[];
+  // sha256 of the exact text `--statement` printed and the human judged; bodySha256 alone misses the interface.
+  statementSha256: string;
   verdict: ScreenVerdict;
-  // Could a body-faithful solution pass every hidden file? Only this decides whether a case is scored.
+  // Could a solution faithful to that statement pass every hidden file? Only this decides whether a case is scored.
   scorable: boolean;
   note: string;
 }
@@ -64,6 +66,7 @@ export function parseScreen(raw: string): Screen {
     const bodySha256 = get('bodySha256');
     const commit = get('commit');
     const testFiles = get('testFiles');
+    const statementSha256 = get('statementSha256');
     const verdict = get('verdict');
     const scorable = get('scorable');
     const note = get('note');
@@ -72,12 +75,13 @@ export function parseScreen(raw: string): Screen {
     if (!Array.isArray(testFiles) || testFiles.length === 0 || !testFiles.every((f) => typeof f === 'string')) {
       fail(id, 'testFiles must be a non-empty list of paths');
     }
+    if (typeof statementSha256 !== 'string' || !SHA256.test(statementSha256)) fail(id, 'statementSha256 is not a sha256 hex digest');
     if (!isVerdict(verdict)) fail(id, 'verdict must be yes, partly or no');
     if (typeof scorable !== 'boolean') fail(id, 'scorable must be a boolean');
     if (verdict === 'no' && scorable) fail(id, 'a "no" verdict cannot be scorable');
     if (verdict === 'yes' && !scorable) fail(id, 'a "yes" verdict must be scorable');
     if (typeof note !== 'string' || !note.trim()) fail(id, 'note must say what a faithful solution could not predict');
-    screen.set(id, { bodySha256, commit, testFiles: testFiles.map(String), verdict, scorable, note });
+    screen.set(id, { bodySha256, commit, testFiles: testFiles.map(String), statementSha256, verdict, scorable, note });
   }
   return screen;
 }
@@ -88,10 +92,12 @@ function sameTests(a: readonly string[], b: readonly string[]): boolean {
   return x.length === y.length && x.every((f, i) => f === y[i]);
 }
 
-// Fail closed: a case nobody screened, or screened against a different body or tests, is not scored.
+// Fail closed: a case nobody screened, or screened against a different statement or tests, is not scored.
+// `statements` maps id → sha256 of the statement the session will be given; a case absent from it is out.
 export function applyScreen(
   cases: readonly CodingCase[],
   screen: Screen,
+  statements: ReadonlyMap<string, string>,
 ): { scorable: CodingCase[]; screenedOut: ScreenedOut[] } {
   const scorable: CodingCase[] = [];
   const screenedOut: ScreenedOut[] = [];
@@ -101,7 +107,11 @@ export function applyScreen(
     else if (e.bodySha256 !== c.bodySha256 || e.commit !== c.commit || !sameTests(e.testFiles, c.testFiles)) {
       screenedOut.push({ ticketId: c.ticketId, reason: 'stale screen — judged a different body, commit or hidden test set' });
     } else if (!e.scorable) screenedOut.push({ ticketId: c.ticketId, reason: `underspecified (${e.verdict})` });
-    else scorable.push(c);
+    else if (!statements.has(c.ticketId)) {
+      screenedOut.push({ ticketId: c.ticketId, reason: 'no task statement could be built for this case' });
+    } else if (statements.get(c.ticketId) !== e.statementSha256) {
+      screenedOut.push({ ticketId: c.ticketId, reason: 'stale screen — judged a different task statement than the one a session is now given' });
+    } else scorable.push(c);
   }
   return { scorable, screenedOut };
 }
