@@ -60,6 +60,52 @@ describe('set', () => {
   });
 });
 
+describe('set autonomy', () => {
+  it('sets afk and back to hitl, reporting what persisted', async () => {
+    const id = await seed();
+    expect((await getTicket(id)).autonomy).toBe('hitl');
+    expect(await runTicketCli(['set', id, 'autonomy', 'afk'])).toBe(`${id}  autonomy -> afk`);
+    expect((await getTicket(id)).autonomy).toBe('afk');
+    await runTicketCli(['set', id, 'autonomy', 'hitl']);
+    expect((await getTicket(id)).autonomy).toBe('hitl');
+  });
+
+  it.each(['null', 'AFK', 'auto', '1'])('rejects %s with the allowed values and leaves the ticket untouched', async (value) => {
+    const id = await seed();
+    await runTicketCli(['set', id, 'autonomy', 'afk']);
+    await expect(runTicketCli(['set', id, 'autonomy', value])).rejects.toThrow(/invalid autonomy .* hitl, afk/);
+    expect((await getTicket(id)).autonomy).toBe('afk');
+  });
+});
+
+describe('set spec', () => {
+  const REF = 'mcinerneyjake/ticket-workflow:docs/specs/workflow-rewrite.md';
+
+  it('sets a well-formed ref and clears it with "null"', async () => {
+    const id = await seed();
+    expect(await runTicketCli(['set', id, 'spec', REF])).toBe(`${id}  spec -> ${REF}`);
+    expect((await getTicket(id)).spec).toBe(REF);
+    expect(await runTicketCli(['set', id, 'spec', 'null'])).toBe(`${id}  spec -> null`);
+    expect((await getTicket(id)).spec).toBeNull();
+  });
+
+  it.each([
+    'docs/specs/workflow-rewrite.md',
+    'owner/repo:docs/spec.txt',
+    'owner/repo:docs/../secret.md',
+    'owner/repo:/abs.md',
+    'owner/repo:docs/my spec.md',
+    'owner/repo:-rf.md',
+    '-owner/repo:a.md',
+    'owner/repo:docs/.hidden.md',
+  ])('rejects %s with the package hint and leaves the ticket untouched', async (value) => {
+    const id = await seed();
+    await runTicketCli(['set', id, 'spec', REF]);
+    await expect(runTicketCli(['set', id, 'spec', ...value.split(' ')])).rejects.toThrow(/invalid spec .* expected owner\/repo:path/);
+    expect((await getTicket(id)).spec).toBe(REF);
+  });
+});
+
 describe('append', () => {
   it('appends from a file without touching the existing body', async () => {
     const id = await seed('Original body.');
