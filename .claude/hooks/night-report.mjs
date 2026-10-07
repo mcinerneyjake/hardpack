@@ -195,7 +195,10 @@ export function collect({ root, boardDir, ticketsDir = null, readStatus = status
     // and its unprocessed queue entries are ordinary (a STOP consumed between tickets, or a probe
     // queueing an id that does not exist). Ungated this nagged forever about `tkt-000000000000` from
     // this checkout's own probe runs — measured live, not reasoned.
-    if (summary.exit !== 0) for (const id of summary.queue) note(id, null);
+    //
+    // `launched` where the runner recorded it (tkt-6ed4a1a0605f): a frontier queue names every ticket
+    // the night MIGHT run, and one a human later picks up was never this night's.
+    if (summary.exit !== 0) for (const id of Array.isArray(summary.launched) ? summary.launched : summary.queue) note(id, null);
     // `exit: null` means the run never reached its own end. While the sentinel is armed that is just
     // a run in flight, which the ACTIVE line already covers, so only an unarmed one is a finding.
     if (summary.exit === null && !active) unfinished.push(stamp);

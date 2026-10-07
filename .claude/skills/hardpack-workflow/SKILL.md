@@ -57,11 +57,13 @@ so, if it was named from memory.
   `start_ticket` refuses an `in-progress` ticket without it, and neither a checkpoint naming your
   branch nor a clean `git status` stands in for the answer. Ask *before* §6, since a refused call
   has already armed `guard-worktree`. A night run's own child (below) **never forces**: the runner
-  accepts a queued id in any status and reads it only at spawn, hours after the human queued it, so
-  an `in-progress` ticket there may be held by another session. Stop; the runner reports the halt.
+  re-checks a ticket against the board at launch, but another session can still take it between
+  that check and this one, so an `in-progress` ticket there may be held by another session. Stop;
+  the runner reports the halt.
 - **A night run holding this ticket may be your own parent — check before you believe otherwise, and
   check BOTH variables.** Nothing in the repo tells the two apart: `.night-run/ACTIVE/` holds one
-  claim file per live runner, named by its pid, that pid's argv carries this ticket's id, and
+  claim file per live runner, named by its pid, that pid's argv carries this ticket's id (or
+  `--frontier`, which names none), and
   `.night-run/<run>/<id>.live.log` grows while you watch it. All three are equally true of a
   competing session and of the runner that spawned you. The runner passes `NIGHT_RUN_TICKET` and
   `NIGHT_RUN_PID` down to each per-ticket session; read them by shelling out, since neither is
@@ -492,10 +494,10 @@ Branch from that base rather than switching to the local default branch, and kee
 new branch does not track it. Branching *here* also means the name is the one you typed, so the
 `worktree-<name>` branch `EnterWorktree` may have put you on never becomes the ticket branch.
 
-**`--continuous`: one worktree per ticket — except where the run owns it.** A night run makes a
-single worktree and drives *every* ticket it queues there; that one belongs to the run, which removes
-it when it finishes, and a session must never close it. Otherwise §15 releases this ticket's worktree
-before §16 returns to §4.
+**`--continuous`: one worktree per ticket — except where the run owns it.** A night run makes one
+worktree per ticket it queues and starts this session inside it; that one belongs to the run, which
+removes it when this session ends, and a session must never close it. Otherwise §15 releases this
+ticket's worktree before §16 returns to §4.
 
 **Use the literal command spellings** `git switch -c`, `npm run typecheck`, `npm run lint`,
 `npm test`, `gh pr create` — the `track-steps` hook keys pipeline milestones off those exact strings
@@ -785,8 +787,8 @@ Take the one you noted there, and say which:
   returns the session to its original directory but leaves the worktree on disk; it cannot remove one
   entered this way. Say that it is still there.
 - **You were already isolated** — a night run, `claude -w` → **release nothing.** `ExitWorktree` is a
-  no-op here, and a night run's worktree is shared by every ticket it queues and removed by the run
-  itself. Removing it by hand destroys the run's working tree mid-run.
+  no-op here, and a night run's worktree belongs to the run, which removes it once this session has
+  ended. Removing it by hand destroys a live session's working tree.
 - **Foreign mode** → the worktree belongs to the target repo, so git removes it:
 
 ```bash

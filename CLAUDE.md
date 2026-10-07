@@ -341,12 +341,15 @@ PRs #374 → #375).
   bumping a dependency, which must `npm install` *in* the worktree or the suite proves nothing about
   the new version.
 - **Two dev servers: set `KANBAN_PORT_OFFSET`** — it shifts the API and Vite ports **together**.
-- **A night run makes its own worktree** — `.claude/worktrees/night-<stamp>`, detached at
-  `origin/main`, `node_modules` **linked** to the primary's (so a dependency bump there installs into
-  the primary's tree) and `.env` copied in; every session it drives works there. A run removes it
-  only when clean — one left behind holds a halted ticket's uncommitted work, so read it before
-  removing it (`tkt-c248cfbc5d8c`). Inside any worktree `git switch main` is refused while the
-  primary holds `main`: branch from `origin/main` after a fetch.
+- **A night run makes one worktree per ticket** — `.claude/worktrees/night-<stamp>-<id>`, detached
+  at `origin/main`, `node_modules` **linked** to the primary's and `.env` copied in. Up to
+  `TEST_SLOTS` sessions run at once, and only `todo`, `autonomy: afk` tickets whose blockers are all
+  `done` (`npm run night -- --frontier`, `tkt-6ed4a1a0605f`). The link is shared, so a dependency
+  bump installs into the primary's tree under its siblings: the runner fingerprints **this repo's**
+  `node_modules` and stops launching on a change. A foreign-mode ticket's own repo is not watched.
+  Each worktree is removed only when clean — one left behind holds a halted
+  ticket's uncommitted work, so read it before removing it (`tkt-c248cfbc5d8c`). Inside any worktree
+  `git switch main` is refused while the primary holds `main`: branch from `origin/main` after a fetch.
 - **`gh pr merge --delete-branch` errors from a worktree and the merge still landed. Do not retry.**
   Confirm `gh pr view <n> --json state` is `MERGED`, then `git push origin --delete <branch>` and
   `git fetch origin main`, which works from any checkout. A bare `git pull` in the primary is refused

@@ -160,6 +160,22 @@ describe('start — dimension: the ids, checked before anything is spawned', () 
     expect(h.err.text).toMatch(/not a ticket id: tkt-abc/);
   });
 
+  it.each([
+    [['start', '--frontier', A], /cannot be named with it/],
+    [['start', '--project', 'hardpack', A], /means nothing without it/],
+    [['start', '--frontier', '--project'], /needs a project name/],
+    [['start', '--frontier', '--project', '--no-wait'], /needs a project name/],
+  ])('refuses %j before spawning anything', async (argv, why) => {
+    const h = harness();
+    expect(await main(argv, h.deps)).toBe(EXIT.usage);
+    expect(h.err.text).toMatch(why);
+    expect(h.spawned).toEqual([]);
+  });
+
+  it('accepts --frontier with no ids, which is not an empty queue', () => {
+    expect(parseArgs(['start', '--frontier'])).toMatchObject({ ok: true, frontier: true, project: null, ids: [] });
+  });
+
   it('refuses an empty queue', async () => {
     const h = harness();
     expect(await main(['start'], h.deps)).toBe(EXIT.usage);
@@ -185,6 +201,15 @@ describe('start — dimension: the spawn itself', () => {
     expect(s.opts.cwd).toBe(root);
     expect(s.args.slice(-2)).toEqual([A, B]);
     expect(h.child.unrefs).toBe(1);
+  });
+
+  // tkt-6ed4a1a0605f — the runner selects the frontier itself; the launcher only passes the flags on.
+  it('passes --frontier and its --project through to the runner, and names the frontier as the queue', async () => {
+    claim(PID);
+    const h = harness({ script: { 1: () => emit(h.log, OK_LINE) } });
+    expect(await main(['start', '--frontier', '--project', 'hardpack'], h.deps)).toBe(EXIT.ok);
+    expect(h.spawned[0].args.slice(-3)).toEqual(['--frontier', '--project', 'hardpack']);
+    expect(h.out.text).toMatch(/queue: the AFK frontier of hardpack/);
   });
 
   it('reports a root it could not resolve rather than launching blind', async () => {
@@ -227,6 +252,19 @@ describe('start — dimension: the claim, answered in five seconds', () => {
     const h = harness({ script: { 1: () => h.child.fire('exit', 64, null) } });
     expect(await main(['start', A], h.deps)).toBe(EXIT.stopped);
     expect(h.err.text).toMatch(/exited immediately \(code 64/);
+  });
+
+  // tkt-6ed4a1a0605f — selection runs before the claim, so these two exits are verdicts, not crashes.
+  it('an empty frontier (runner exit 0 before claiming) is a quiet night, not a stop', async () => {
+    const h = harness({ script: { 1: () => h.child.fire('exit', 0, null) } });
+    expect(await main(['start', '--frontier'], h.deps)).toBe(EXIT.ok);
+    expect(h.out.text).toMatch(/exited before claiming the sentinel \(code 0\); nothing was run/);
+  });
+
+  it('a refused queue (runner pre-flight exit before claiming) keeps the pre-flight code', async () => {
+    const h = harness({ script: { 1: () => h.child.fire('exit', EXIT.preflight, null) } });
+    expect(await main(['start', A], h.deps)).toBe(EXIT.preflight);
+    expect(h.err.text).toMatch(/code 1\); nothing was run/);
   });
 
   it('--no-wait returns once the claim lands, and does not claim a pre-flight it never saw', async () => {
@@ -739,7 +777,7 @@ describe('runner-log attribution — dimension: whose log is it', () => {
 // an em dash swapped for a hyphen on one side is a silent return to attribution by mtime.
 describe('the declaration round trip — the runner declares, status attributes', () => {
   const seed = (id, status) =>
-    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n---\nbody\n`);
+    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\nautonomy: afk\n---\nbody\n`);
   const passingProbe = () => {
     let call = 0;
     return () => Promise.resolve(call++ === 0
@@ -904,7 +942,7 @@ describe('stop — dimension: one actor, and the wrong actor', () => {
 // present" and returning EXIT.ok, a run that did nothing and reported a clean night.
 describe('the STOP round trip — night:stop writes it, the runner consumes it', () => {
   const seed = (id, status) =>
-    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n---\nbody\n`);
+    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\nautonomy: afk\n---\nbody\n`);
   const passingProbe = () => {
     let call = 0;
     return () => Promise.resolve(call++ === 0
@@ -1072,7 +1110,7 @@ describe('confinement — start is bounded; status and stop must stay reachable'
 // in the suite (review, LOW).
 describe('the live tee — both halves of the seam', () => {
   const seed = (id, status) =>
-    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n---\nbody\n`);
+    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\nautonomy: afk\n---\nbody\n`);
   const passingProbe = () => {
     let call = 0;
     return () => Promise.resolve(call++ === 0
@@ -1103,7 +1141,7 @@ describe('the live tee — both halves of the seam', () => {
 
 describe('summary.json — the machine-readable record tkt-4ea4e17f1419 reads', () => {
   const seed = (id, status) =>
-    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n---\nbody\n`);
+    writeFileSync(join(root, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\nautonomy: afk\n---\nbody\n`);
   const probe = (armed) => () => {
     let call = 0;
     return () => Promise.resolve(call++ === 0

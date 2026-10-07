@@ -21,8 +21,9 @@ import {
 } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { primaryRoot } from '../.claude/hooks/guard-unattended-merge.mjs';
+import { readBoard, frontierOf, refuseNamed, whyNotRunnable, depsFingerprint } from './night-frontier.mjs';
 
-export const USAGE = 'usage: npm run night -- <ticket-id>...';
+export const USAGE = 'usage: npm run night -- <ticket-id>... | --frontier [--project <name>]';
 
 // The exit status is the only part of this a cron wrapper or an `|| notify-me` ever reads, so a
 // stopping verdict must never share a code with a clean night (review, HIGH).
@@ -832,11 +833,11 @@ const PROVISIONED = [
  * primary's rather than installed: an install per run costs minutes, and the primary's tree is what
  * a session used before this change anyway.
  */
-export function createRunWorktree(root, stamp, { git = defaultGit } = {}) {
+export function createRunWorktree(root, stamp, { git = defaultGit, fetch = true } = {}) {
   const path = runWorktreePath(root, stamp);
-  const fetch = git(root, ['fetch', '-q', 'origin', 'main']);
-  if (fetch.code !== 0) {
-    return { ok: false, why: `could not fetch origin/main for the run's worktree (${fetch.out.trim() || `exit ${fetch.code}`})` };
+  const fetched = fetch ? git(root, ['fetch', '-q', 'origin', 'main']) : { code: 0, out: '' };
+  if (fetched.code !== 0) {
+    return { ok: false, why: `could not fetch origin/main for the run's worktree (${fetched.out.trim() || `exit ${fetched.code}`})` };
   }
   mkdirSync(dirname(path), { recursive: true });
   const add = git(root, ['worktree', 'add', '-q', '--detach', path, 'origin/main']);
@@ -914,6 +915,34 @@ export function capMsFrom(raw) {
   return { ok: true, capMs: seconds * 1000 };
 }
 
+// The package's hold reads the same variable with this default (dist/test-run/hold.js), pinned by a
+// test against the installed build. Unlike the hold, a malformed value is refused rather than
+// defaulted: here it sizes how many unattended sessions run at once.
+export const DEFAULT_SLOTS = 2;
+
+export function concurrencyFrom(raw) {
+  if (raw === undefined) return { ok: true, slots: DEFAULT_SLOTS };
+  if (!/^[1-9]\d*$/.test(raw)) {
+    return { ok: false, why: `TEST_SLOTS must be a positive whole number, got ${JSON.stringify(raw)}` };
+  }
+  return { ok: true, slots: Number(raw) };
+}
+
+export function parseQueueArgs(argv) {
+  if (argv[0] === '--frontier') {
+    if (argv.length === 1) return { ok: true, mode: 'frontier', project: null, ids: [] };
+    if (argv.length === 3 && argv[1] === '--project' && argv[2] && !argv[2].startsWith('--')) {
+      return { ok: true, mode: 'frontier', project: argv[2], ids: [] };
+    }
+    return { ok: false };
+  }
+  if (argv.length > 0 && argv.every((a) => /^tkt-[0-9a-f]{12}$/.test(a))) return { ok: true, mode: 'ids', project: null, ids: argv };
+  return { ok: false };
+}
+
+const SEVERITY = [EXIT.ok, EXIT.stopped, EXIT.alarm];
+const worse = (a, b) => (SEVERITY.indexOf(b) > SEVERITY.indexOf(a) ? b : a);
+
 export async function main(
   argv = process.argv.slice(2),
   // An operator's own override is the board; it must not be clobbered by cwd on its way to the
@@ -930,10 +959,12 @@ export async function main(
     createWorktree = createRunWorktree,
     removeWorktree = removeRunWorktree,
     alive = runAlive,
+    loadBoard = readBoard,
+    fingerprint = depsFingerprint,
   } = {},
 ) {
-  const queue = argv.filter((a) => /^tkt-[0-9a-f]{12}$/.test(a));
-  if (queue.length === 0 || queue.length !== argv.length) {
+  const args = parseQueueArgs(argv);
+  if (!args.ok) {
     process.stderr.write(`${USAGE}\n`);
     return EXIT.usage;
   }
@@ -942,6 +973,44 @@ export async function main(
   if (!cap.ok) {
     process.stderr.write(`${cap.why}\n`);
     return EXIT.usage;
+  }
+  const width = concurrencyFrom(env.TEST_SLOTS);
+  if (!width.ok) {
+    process.stderr.write(`${width.why}\n`);
+    return EXIT.usage;
+  }
+
+  // Selected BEFORE the claim: a queue that is refused must never arm the merge gate.
+  const board = loadBoard(boardDir);
+  if (!board.ok) {
+    process.stderr.write(`pre-flight FAILED: ${board.why}\nAborting; no tickets were run.\n`);
+    return EXIT.preflight;
+  }
+  if (board.unreadable.length > 0) {
+    process.stdout.write(`WARNING: ${board.unreadable.length} ticket file(s) could not be parsed and are not considered: ${board.unreadable.join(', ')}\n`);
+  }
+  let queue;
+  let excluded = [];
+  if (args.mode === 'frontier') {
+    ({ queue, excluded } = frontierOf(board, { project: args.project }));
+    for (const e of excluded) process.stdout.write(`not in the frontier: ${e.id} — ${e.why}\n`);
+    if (queue.length === 0) {
+      process.stdout.write(`the AFK frontier${args.project ? ` of ${args.project}` : ''} is empty — nothing to run\n`);
+      return EXIT.ok;
+    }
+    process.stdout.write(`frontier: ${queue.join(' ')}\n`);
+  } else {
+    // THE AUTHORIZING LINE for a named queue: afk is what admits unattended work, so a named id
+    // outside the frontier refuses the whole night rather than being dropped in silence.
+    const refused = refuseNamed(board, args.ids);
+    if (refused.length > 0) {
+      process.stderr.write(
+        'pre-flight FAILED: a night run drives only todo, autonomy: afk tickets whose blockers are all done:\n'
+        + `${refused.map((r) => `  ${r.id}: ${r.why}\n`).join('')}Aborting; no tickets were run.\n`,
+      );
+      return EXIT.preflight;
+    }
+    queue = args.ids;
   }
 
   // The runner must write the sentinel where the GUARD reads it. The guard derives that from its own
@@ -975,26 +1044,27 @@ export async function main(
       process.stdout.write(`WARNING: the STOP file could NOT be removed (${err?.code ?? err?.message}) — the next run will stop immediately until it is deleted by hand\n`);
     }
   };
-  let worktree = null;
+  // One worktree per ticket, keyed by id, live from its creation until its session has been judged.
+  const live = new Map();
+  const running = new Map();
+  let logDir = null;
   let summary = null;
   let saveSummary = () => {};
+  const noteLive = () => noteClaim(root, { logDir, worktree: [...live.values()].map((w) => w.path).join(', ') });
   // On the signal and crash paths the `claude` child is not killed by this process and may outlive
   // it (night-control.mjs: only a group leader takes it down), so a clean-looking worktree can still
   // be a live session's cwd. Interrupted, it is KEPT and said so (review, CONFIRMED).
-  const releaseWorktree = ({ interrupted = false } = {}) => {
-    if (!worktree) return;
-    const made = worktree;
-    worktree = null;
+  const releaseWorktree = (id, { interrupted = false } = {}) => {
+    const made = live.get(id);
+    if (!made) return null;
+    live.delete(id);
     const res = interrupted
       ? { removed: false, why: 'the run was interrupted, and the session it was driving may still be working in it' }
       : removeWorktree(root, made);
     process.stdout.write(res.removed
       ? `worktree removed: ${made.path}\n`
       : `worktree KEPT at ${made.path} — ${res.why}\n`);
-    if (summary) {
-      summary.worktree = { path: made.path, removed: res.removed, ...(res.removed ? {} : { why: res.why }) };
-      saveSummary();
-    }
+    return { path: made.path, removed: res.removed, ...(res.removed ? {} : { why: res.why }) };
   };
   // disarm first — it narrows the check-then-write race with `night:stop` — and the rest in a finally,
   // since none of it throws and a disarm that does must not skip it. STOP is swept only by the LAST
@@ -1005,7 +1075,11 @@ export async function main(
       disarm(root);
     } finally {
       if (!othersLive(root, { alive })) sweepStop();
-      releaseWorktree({ interrupted });
+      const left = [...live.keys()].map((id) => ({ id, worktree: releaseWorktree(id, { interrupted }) }));
+      if (summary && left.length > 0) {
+        summary.unfinished = left;
+        saveSummary();
+      }
     }
   };
   // SIGHUP is the likeliest overnight death of all — an ssh session dropping — and its default action
@@ -1028,7 +1102,7 @@ export async function main(
     // behave — and a directory made only on the passing path throws that away (tkt-a761e990190d).
     const startedAt = new Date().toISOString();
     const stamp = startedAt.replace(/[:.]/g, '-');
-    const logDir = join(root, '.night-run', stamp);
+    logDir = join(root, '.night-run', stamp);
     mkdirSync(logDir, { recursive: true });
     // The link `night:status` attributes a log by. The launcher owns `runner-<stamp>.log` and the
     // runner owns `logDir`, and until this line nothing tied either to the pid in ACTIVE — so status
@@ -1040,7 +1114,18 @@ export async function main(
     // Rewritten after EVERY ticket rather than once at the end: the nights worth reading are the ones
     // that died mid-queue, and a summary written only on the way out is exactly the one they never
     // reach. Generated straight from `classify`, never transcribed (tkt-4ea4e17f1419 reads this).
-    summary = { startedAt, queue, results: [], exit: null };
+    summary = {
+      startedAt,
+      mode: args.mode,
+      ...(args.project ? { project: args.project } : {}),
+      concurrency: width.slots,
+      queue,
+      excluded,
+      launched: [],
+      notLaunched: [],
+      results: [],
+      exit: null,
+    };
     saveSummary = () => {
       try {
         writeFileSync(join(logDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
@@ -1086,108 +1171,217 @@ export async function main(
       saveSummary();
       return EXIT.stopped;
     }
-    // Made only once the guard is proven, and BEFORE the verdict line: a worktree that cannot be made
-    // must read to `night:start` as the pre-flight failure it is, not as a run that passed and died.
-    const made = createWorktree(root, stamp);
-    if (!made.ok) {
+    // Every parallel session shares the primary's node_modules through its link, so the baseline is
+    // taken before the first launch; one that cannot be read is a night that cannot be watched.
+    const deps = fingerprint(root);
+    if (!deps.ok) {
       summary.exit = EXIT.preflight;
       saveSummary();
-      process.stderr.write(`pre-flight FAILED: ${made.why}\nAborting; no tickets were run.\n`);
+      process.stderr.write(`pre-flight FAILED: the dependency fingerprint could not be taken: ${deps.why}\nAborting; no tickets were run.\n`);
       return EXIT.preflight;
     }
-    worktree = made;
-    summary.worktree = { path: made.path, removed: null };
-    saveSummary();
-    noteClaim(root, { logDir, worktree: made.path });
+    // Every launch is re-checked against the board as it is NOW, the first included: selection ran
+    // before the claim and the probes, and a human may have taken or re-labelled a ticket since.
+    const recheck = (id) => {
+      const now = loadBoard(boardDir);
+      if (!now.ok) return { ok: false, why: `the board could not be re-read (${now.why})` };
+      const t = now.tickets.get(id);
+      return { ok: true, why: t ? whyNotRunnable(t, now.tickets) : 'no longer on the board, or its file is unreadable' };
+    };
+    // Kept out of `results`: the morning hook reads every result id as this night's work, so a ticket
+    // a human took before its launch would be reported as stopped mid-ticket (review).
+    const notLaunched = (id, why) => {
+      process.stdout.write(`\n--- ${id}  NOT LAUNCHED: ${why}\n`);
+      summary.notLaunched.push({ id, why });
+      saveSummary();
+    };
+    const pending = [...queue];
+    while (pending.length > 0) {
+      const r = recheck(pending[0]);
+      if (!r.ok) {
+        summary.exit = EXIT.preflight;
+        saveSummary();
+        process.stderr.write(`pre-flight FAILED: ${r.why}\nAborting; no tickets were run.\n`);
+        return EXIT.preflight;
+      }
+      if (r.why === null) break;
+      notLaunched(pending.shift(), r.why);
+    }
+    if (pending.length === 0) {
+      summary.exit = EXIT.ok;
+      saveSummary();
+      process.stdout.write('every queued ticket left the frontier during the pre-flight — nothing to run\n');
+      return EXIT.ok;
+    }
+    // The first ticket's worktree is made BEFORE the verdict line: one that cannot be made must read
+    // to `night:start` as the pre-flight failure it is, not as a run that passed and died. The only
+    // fetch is this one — a fetch per launch races the sessions' own for the ref lock (review).
+    const first = createWorktree(root, `${stamp}-${pending[0]}`, { fetch: true });
+    if (!first.ok) {
+      summary.exit = EXIT.preflight;
+      saveSummary();
+      process.stderr.write(`pre-flight FAILED: ${first.why}\nAborting; no tickets were run.\n`);
+      return EXIT.preflight;
+    }
+    live.set(pending[0], first);
+    noteLive();
     process.stdout.write(`pre-flight: merge guard arms and disarms correctly (probes: ${saved})\n`);
-    process.stdout.write(`worktree: ${made.path} — every session this run drives works there, detached at origin/main\n`);
+    process.stdout.write(`concurrency: up to ${width.slots} session(s) at once (TEST_SLOTS), each in its own worktree detached at origin/main\n`);
 
     let exit = EXIT.ok;
     let neverStarted = 0;
-    for (const id of queue) {
-      if (fileHere(stop)) {
-        // Between tickets this is a stop addressed to a running queue, and ending is the clean
-        // outcome; cleanup() sweeps it on the way out once no live run is left to consume it.
-        process.stdout.write('STOP file present — ending the queue cleanly\n');
-        break;
-      }
-      const before = readStatus(boardDir, id);
-      // Epoch SECONDS, to compare against git's `%ct`, and taken per ticket rather than per run: a
-      // queue runs for hours, so the run's own start would admit a commit made by the previous
-      // ticket's session. Captured before the session so a commit it makes can only be newer.
-      const sessionStart = Math.floor(Date.now() / 1000);
-      process.stdout.write(`\n--- ${id}  (was ${before ?? 'unreadable'})\n`);
+    let halted = false;
 
-      const res = await runSession(id, { capMs: cap.capMs, logDir, exec, cwd: made.path, boardDir });
-      writeFileSync(join(logDir, `${id}.log`), res.out);
+    const startNext = () => {
+      while (!halted && running.size < width.slots && pending.length > 0) {
+        if (fileHere(stop)) {
+          // Between tickets this is a stop addressed to a running queue, and ending is the clean
+          // outcome; cleanup() sweeps it on the way out once no live run is left to consume it.
+          process.stdout.write('STOP file present — launching nothing further; sessions in flight finish\n');
+          halted = true;
+          break;
+        }
+        const id = pending.shift();
+        let made = live.get(id);
+        if (!made) {
+          const r = recheck(id);
+          if (r.ok && r.why !== null) {
+            notLaunched(id, r.why);
+            continue;
+          }
+          // "Could not check" stops the night: reported as a skip, it would exit 0 (review).
+          made = r.ok ? createWorktree(root, `${stamp}-${id}`, { fetch: false }) : { ok: false, why: r.why };
+          if (!made.ok) {
+            notLaunched(id, made.why);
+            process.stdout.write('    nothing further is launched\n');
+            exit = worse(exit, EXIT.stopped);
+            halted = true;
+            break;
+          }
+          live.set(id, made);
+          noteLive();
+        }
+        summary.launched.push(id);
+        saveSummary();
+        const before = readStatus(boardDir, id);
+        // Epoch SECONDS, to compare against git's `%ct`, and taken per ticket rather than per run: a
+        // queue runs for hours, so the run's own start would admit a commit made by an earlier
+        // ticket's session. Captured before the session so a commit it makes can only be newer.
+        const sessionStart = Math.floor(Date.now() / 1000);
+        process.stdout.write(`\n--- ${id}  (was ${before ?? 'unreadable'}) — launched in ${made.path}\n`);
+        running.set(id, runSession(id, { capMs: cap.capMs, logDir, exec, cwd: made.path, boardDir })
+          .then((res) => ({ id, before, sessionStart, res, made })));
+      }
+    };
+
+    startNext();
+    while (running.size > 0) {
+      const { id, before, sessionStart, res, made } = await Promise.race(running.values());
+      running.delete(id);
+      try {
+        writeFileSync(join(logDir, `${id}.log`), res.out);
+      } catch (err) {
+        process.stdout.write(`    WARNING: ${id}.log not written (${err?.code ?? err?.message})\n`);
+      }
+      let result;
 
       // A session that could not be spawned at all would otherwise read as "never started" and march
       // through the whole queue in silence — `claude` off PATH burns every ticket (review, MEDIUM).
       if (res.code === -1) {
-        process.stdout.write(`    HALT: the session could not be started (${res.out.slice(0, 200)})\n    queue stops here\n`);
-        // Recorded before the break: otherwise the machine-readable summary shows a stopped night
-        // with the failing ticket ABSENT, and the reader cannot tell which one it died on.
-        summary.results.push({ id, before, after: null, level: 'halt', text: 'the session could not be started', log: join(logDir, `${id}.log`) });
-        exit = EXIT.stopped;
-        saveSummary();
-        break;
-      }
+        process.stdout.write(`\n=== ${id}  HALT: the session could not be started (${res.out.slice(0, 200)})\n    nothing further is launched\n`);
+        result = { id, before, after: null, level: 'halt', text: 'the session could not be started', log: join(logDir, `${id}.log`) };
+        exit = worse(exit, EXIT.stopped);
+        halted = true;
+      } else {
+        const after = readStatus(boardDir, id);
+        // A FAILED GATE IS NOT A PARK (review, medium). CLAUDE.md invites committing as often as the
+        // work needs, so a session can commit an early chunk, fail `npm test` later and halt still
+        // `in-progress` — with a commit sitting there. Parking that would tell the morning human to
+        // push and open a PR on work whose gate is red, and `describe`'s "UNDIAGNOSED" wording never
+        // reaches a non-halt level to warn them. So the diagnosis gates the park rather than the
+        // other way round.
+        const diagnosed = gateFailed(res.out) || hookRejected(res.out);
+        // Only asked when it could change the verdict — an uncapped, undiagnosed run left `in-progress`.
+        // Every other transition already decides itself, and spawning git against a foreign checkout
+        // for a ticket that reached `qa` would be work whose answer nothing reads.
+        const parked = after === 'in-progress' && !res.capped && !diagnosed
+          ? parkedWork({ id, repoRoot: repoForProject(made.path, readProject(boardDir, id)), since: sessionStart })
+          : { committed: false, why: diagnosed ? 'the quality gate failed, so nothing here is finished' : null };
+        const verdict = classify({ before, after, capped: res.capped, committed: parked.committed });
+        process.stdout.write(`\n=== ${id}  ${verdict.level.toUpperCase()}: ${describe(verdict, res.out)}\n`);
+        // Keyed on the VERDICT, not on the evidence. `parkedWork` can succeed while classify still
+        // stops — an unreadable `before` yields `note`/stop — and recording a branch there made the
+        // two reports contradict each other, one calling the ticket parked and the other mid-ticket.
+        const isParkedVerdict = verdict.level === 'parked';
+        if (isParkedVerdict) process.stdout.write(`    parked at ${parked.branch} in ${parked.repo} — unpushed, no PR\n`);
+        else if (parked.why) process.stdout.write(`    no committed work found: ${parked.why}\n`);
+        result = {
+          id,
+          before,
+          after,
+          level: verdict.level,
+          text: verdict.text,
+          log: join(logDir, `${id}.log`),
+          // Recorded so the morning report can NAME the parked branch without re-deriving it — the
+          // run is the only thing that still knows which repo the ticket was worked in.
+          ...(isParkedVerdict ? { branch: parked.branch, repo: parked.repo } : {}),
+        };
 
-      const after = readStatus(boardDir, id);
-      // A FAILED GATE IS NOT A PARK (review, medium). CLAUDE.md invites committing as often as the
-      // work needs, so a session can commit an early chunk, fail `npm test` later and halt still
-      // `in-progress` — with a commit sitting there. Parking that would tell the morning human to
-      // push and open a PR on work whose gate is red, and `describe`'s "UNDIAGNOSED" wording never
-      // reaches a non-halt level to warn them. So the diagnosis gates the park rather than the
-      // other way round.
-      const diagnosed = gateFailed(res.out) || hookRejected(res.out);
-      // Only asked when it could change the verdict — an uncapped, undiagnosed run left `in-progress`.
-      // Every other transition already decides itself, and spawning git against a foreign checkout
-      // for a ticket that reached `qa` would be work whose answer nothing reads.
-      const parked = after === 'in-progress' && !res.capped && !diagnosed
-        ? parkedWork({ id, repoRoot: repoForProject(made.path, readProject(boardDir, id)), since: sessionStart })
-        : { committed: false, why: diagnosed ? 'the quality gate failed, so nothing here is finished' : null };
-      const verdict = classify({ before, after, capped: res.capped, committed: parked.committed });
-      process.stdout.write(`    ${verdict.level.toUpperCase()}: ${describe(verdict, res.out)}\n`);
-      // Keyed on the VERDICT, not on the evidence. `parkedWork` can succeed while classify still
-      // stops — an unreadable `before` yields `note`/stop — and recording a branch there made the
-      // two reports contradict each other, one calling the ticket parked and the other mid-ticket.
-      const isParkedVerdict = verdict.level === 'parked';
-      if (isParkedVerdict) process.stdout.write(`    parked at ${parked.branch} in ${parked.repo} — unpushed, no PR\n`);
-      else if (parked.why) process.stdout.write(`    no committed work found: ${parked.why}\n`);
-      summary.results.push({
-        id,
-        before,
-        after,
-        level: verdict.level,
-        text: verdict.text,
-        log: join(logDir, `${id}.log`),
-        // Recorded so the morning report can NAME the parked branch without re-deriving it — the
-        // run is the only thing that still knows which repo the ticket was worked in.
-        ...(isParkedVerdict ? { branch: parked.branch, repo: parked.repo } : {}),
-      });
+        // In completion order: under concurrency "in a row" is the order the board heard back.
+        neverStarted = verdict.text.startsWith('never started') ? neverStarted + 1 : 0;
+        if (neverStarted >= 2) {
+          process.stdout.write('    two tickets in a row never started — something is wrong with the runner, not the board\n    nothing further is launched\n');
+          exit = worse(exit, EXIT.stopped);
+          halted = true;
+        }
+        if (verdict.stop) {
+          process.stdout.write('    nothing further is launched; sessions in flight finish\n');
+          exit = worse(exit, verdict.level === 'alarm' ? EXIT.alarm : EXIT.stopped);
+          halted = true;
+        }
+      }
+      result.worktree = releaseWorktree(id);
+      noteLive();
+
+      // Detected, not prevented: nothing on a ticket says it will touch dependencies. Reported once,
+      // against the first session to finish after the change; the in-flight ones are named with it.
+      if (!summary.depsChanged) {
+        const now = fingerprint(root);
+        if (!now.ok || now.value !== deps.value) {
+          const why = now.ok ? 'changed' : `could not be re-read (${now.why})`;
+          const inFlight = [...running.keys()];
+          process.stdout.write(`    DEPENDENCIES: the primary's node_modules ${why} by the time ${id} finished (in flight: ${inFlight.join(', ') || 'none'}) — nothing further is launched\n`);
+          summary.depsChanged = { after: id, inFlight, why };
+          exit = worse(exit, EXIT.stopped);
+          halted = true;
+        }
+      }
+      summary.results.push(result);
       saveSummary();
-
-      neverStarted = verdict.text.startsWith('never started') ? neverStarted + 1 : 0;
-      if (neverStarted >= 2) {
-        process.stdout.write('    two tickets in a row never started — something is wrong with the runner, not the board\n    queue stops here\n');
-        exit = EXIT.stopped;
-        break;
-      }
-      if (verdict.stop) {
-        process.stdout.write('    queue stops here\n');
-        exit = verdict.level === 'alarm' ? EXIT.alarm : EXIT.stopped;
-        break;
-      }
+      startNext();
     }
     summary.exit = exit;
     saveSummary();
     process.stdout.write(`\nlogs: ${logDir}\n`);
     return exit;
+  } catch (err) {
+    if (summary) {
+      summary.exit = EXIT.stopped;
+      summary.crash = String(err?.message ?? err);
+      saveSummary();
+    }
+    throw err;
   } finally {
-    // A STOP written while the LAST ticket was in flight is never seen by the loop check, so the
+    // A throw while judging one session must not disarm the merge gate under siblings still running
+    // unattended: they are awaited first, and their worktrees kept unjudged (review).
+    const unjudged = running.size > 0;
+    if (unjudged) {
+      process.stdout.write(`waiting for ${running.size} session(s) still running before disarming: ${[...running.keys()].join(', ')}\n`);
+      await Promise.allSettled(running.values());
+    }
+    // A STOP written while the LAST ticket was in flight is never seen by the launch check, so the
     // sweep in cleanup() is what serves it: the run is over either way (review, MEDIUM).
-    cleanup();
+    cleanup({ interrupted: unjudged });
     for (const [signal, fn] of handlers) process.off(signal, fn);
     process.off('uncaughtException', onCrash);
     process.off('unhandledRejection', onCrash);
@@ -1195,5 +1389,9 @@ export async function main(
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  main().then((code) => process.exit(code));
+  // Without the catch a rejection exits 1, which is EXIT.preflight: "no tickets were run" (review).
+  main().then((code) => process.exit(code), (err) => {
+    process.stderr.write(`night run crashed: ${err?.stack ?? err}\n`);
+    process.exit(EXIT.stopped);
+  });
 }
