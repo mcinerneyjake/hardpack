@@ -12,6 +12,7 @@ import { assertContaminationCorpus } from './contamination.js';
 import { exec, readContaminationCorpus, realDeps, screenCase, sha256 } from './realDeps.js';
 import { RUN_REPORT } from './layout.js';
 import { DEFAULT_KEEP_RUNS, pruneRuns, type PruneResult } from './retention.js';
+import { applyScreen, parseScreen } from './screen.js';
 
 // Cloud-metered: every session is a Claude Code run billed per token. Never wired into `npm test`
 // or CI — gateIsolation.test.ts holds that.
@@ -22,6 +23,7 @@ import { DEFAULT_KEEP_RUNS, pruneRuns, type PruneResult } from './retention.js';
 //   npm run eval:coding -- [--trials k] [--budget usd] [--cases id,id] [--keep n]
 
 export const MANIFEST_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cases.json');
+export const SCREEN_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'screen.json');
 
 // Cited in ~/.claude/CLAUDE.md, so a corpus read that cannot find it read nothing useful.
 const CORPUS_CONTROL_ID = 'tkt-c8ac95e41f6f';
@@ -181,11 +183,16 @@ async function main(): Promise<void> {
   }
 
   let cases = parseCaseManifest(await fs.readFile(MANIFEST_PATH, 'utf8'));
+  const humanScreen = parseScreen(await fs.readFile(SCREEN_PATH, 'utf8'));
   if (args.only) {
     const unknown = args.only.filter((id) => !cases.some((c) => c.ticketId === id));
     if (unknown.length) throw new Error(`--cases names ids not in the manifest: ${unknown.join(', ')}`);
     cases = cases.filter((c) => args.only?.includes(c.ticketId));
   }
+  // Before any fixture, control or prune: a screened-out case is never touched in any mode.
+  const { scorable, screenedOut } = applyScreen(cases, humanScreen);
+  for (const r of screenedOut) process.stdout.write(`  [SKIP] ${r.ticketId}  ${r.reason}\n`);
+  if (scorable.length === 0) throw new Error(`all ${cases.length} case(s) are screened out — nothing to control or score.`);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const evalRoot = evalRootFor(repoRoot);
@@ -200,9 +207,9 @@ async function main(): Promise<void> {
   process.stdout.write(`Run directory: ${runDir}\n`);
 
   if (args.controlsOnly) {
-    const verdicts = await runControls(cases, deps);
+    const verdicts = await runControls(scorable, deps);
     const ok = [...verdicts.values()].filter((v) => v.ok).length;
-    process.stdout.write(`\n${ok}/${cases.length} case(s) pass their controls. No session was run.\n`);
+    process.stdout.write(`\n${ok}/${scorable.length} scorable case(s) pass their controls. No session was run.\n`);
     return;
   }
 
@@ -210,9 +217,9 @@ async function main(): Promise<void> {
   // and still before the first metered session. `protect` keeps this run's own dir out of the sweep.
   reportPrune(await pruneRuns(evalRoot, { keep: args.keep, protect: stamp }), args.keep);
 
-  const sessions = cases.length * args.trials;
+  const sessions = scorable.length * args.trials;
   process.stdout.write(`Up to ${sessions} session(s) at a $${args.budget} cap each — spend bounded by $${(sessions * args.budget).toFixed(0)}.\n`);
-  const report = await evaluateCoding(cases, deps, { trials: args.trials });
+  const report = await evaluateCoding(cases, deps, { trials: args.trials, humanScreen });
   process.stdout.write(`${formatReport(report)}\n`);
   await fs.writeFile(path.join(runDir, RUN_REPORT), `${JSON.stringify(report, null, 2)}\n`);
 }

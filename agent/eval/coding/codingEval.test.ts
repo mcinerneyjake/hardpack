@@ -4,6 +4,7 @@ import {
   InstrumentFault, evaluateCoding, sessionDidNotRun, type CodingDeps, type CodingResult, type SessionOutcome,
 } from './codingEval.js';
 import type { VitestRun } from './grading.js';
+import type { Screen, ScreenEntry } from './screen.js';
 
 const mk = (id: string): CodingCase => ({
   ticketId: id,
@@ -14,6 +15,11 @@ const mk = (id: string): CodingCase => ({
   bodySha256: 'c'.repeat(64),
   snapshot: '2026-09-16T21-55-49-752Z-e2cc7598.md',
 });
+
+const verdict = (o: Partial<ScreenEntry> = {}): ScreenEntry => ({
+  bodySha256: 'c'.repeat(64), commit: 'a'.repeat(40), testFiles: ['h.test.ts'], verdict: 'partly', scorable: true, note: 'n', ...o,
+});
+const OPEN: Screen = new Map(['1', '2', '3', '4'].map((n) => [`tkt-00000000000${n}`, verdict()]));
 
 const green = { passed: 3, failed: 0, skipped: 0 };
 const redFile = { passed: 0, failed: 3, skipped: 0 };
@@ -75,7 +81,7 @@ describe('evaluateCoding — controls run before any session, and a failed contr
       'tkt-000000000003': { basePasses: true },
       'tkt-000000000004': { goldFails: true },
     });
-    const report = await evaluateCoding(['1', '2', '3', '4'].map((n) => mk(`tkt-00000000000${n}`)), deps, { trials: 1 });
+    const report = await evaluateCoding(['1', '2', '3', '4'].map((n) => mk(`tkt-00000000000${n}`)), deps, { trials: 1, humanScreen: OPEN });
 
     expect(scored(report.results)).toEqual(['tkt-000000000001']);
     expect([...trialCount.keys()]).toEqual(['tkt-000000000001']);
@@ -93,14 +99,14 @@ describe('evaluateCoding — controls run before any session, and a failed contr
       'tkt-000000000001': { sessionSolves: [true] },
       'tkt-000000000003': { basePasses: true, sessionSolves: [true] },
     });
-    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000003')], deps, { trials: 1 });
+    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000003')], deps, { trials: 1, humanScreen: OPEN });
     expect(scored(report.results)).toEqual(['tkt-000000000001']);
     expect(report.metrics.scored).toBe(1);
   });
 
   it('aborts, spending nothing, when every case fails its controls', async () => {
     const { deps } = stubDeps({ 'tkt-000000000003': { basePasses: true } });
-    await expect(evaluateCoding([mk('tkt-000000000003')], deps, { trials: 1 })).rejects.toThrow(/all 1 case\(s\) failed their controls/);
+    await expect(evaluateCoding([mk('tkt-000000000003')], deps, { trials: 1, humanScreen: OPEN })).rejects.toThrow(/all 1 case\(s\) failed their controls/);
     expect(deps.runSession).not.toHaveBeenCalled();
   });
 
@@ -108,8 +114,56 @@ describe('evaluateCoding — controls run before any session, and a failed contr
     const { deps } = stubDeps({ 'tkt-000000000001': {} }, {
       checkEnvironment: () => Promise.reject(new Error('claude CLI unreachable')),
     });
-    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1 })).rejects.toThrow(/unreachable/);
+    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen: OPEN })).rejects.toThrow(/unreachable/);
     expect(deps.prepareFixture).not.toHaveBeenCalled();
+  });
+});
+
+describe('evaluateCoding — the human screen gates scoring', () => {
+  it('never controls, runs or scores a case screened underspecified, and leaves it out of the rate', async () => {
+    const { deps, trialCount } = stubDeps({
+      'tkt-000000000001': { sessionSolves: [false] },
+      'tkt-000000000002': { sessionSolves: [true] },
+    });
+    const humanScreen: Screen = new Map([
+      ['tkt-000000000001', verdict()],
+      ['tkt-000000000002', verdict({ verdict: 'no', scorable: false })],
+    ]);
+    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 1, humanScreen });
+
+    expect(scored(report.results)).toEqual(['tkt-000000000001']);
+    expect(report.results.map((r) => r.ticketId)).not.toContain('tkt-000000000002');
+    expect(vi.mocked(deps.screen).mock.calls.map((c) => c[0].ticketId)).toEqual(['tkt-000000000001']);
+    expect(vi.mocked(deps.prepareFixture).mock.calls.every((c) => c[0].ticketId === 'tkt-000000000001')).toBe(true);
+    expect([...trialCount.keys()]).toEqual(['tkt-000000000001']);
+    expect(report.metrics.passRate).toBe(0);
+    expect(report.metrics.screenedOut).toBe(1);
+    expect(report.lines.join('\n')).toMatch(/\[SKIP\] tkt-000000000002 {2}underspecified \(no\)/);
+  });
+
+  it('screens out a case with no verdict, or a verdict on a different body', async () => {
+    const { deps } = stubDeps({
+      'tkt-000000000001': { sessionSolves: [true] },
+      'tkt-000000000002': { sessionSolves: [true] },
+      'tkt-000000000003': { sessionSolves: [true] },
+    });
+    const humanScreen: Screen = new Map([
+      ['tkt-000000000001', verdict()],
+      ['tkt-000000000003', verdict({ bodySha256: 'd'.repeat(64) })],
+    ]);
+    const report = await evaluateCoding(['1', '2', '3'].map((n) => mk(`tkt-00000000000${n}`)), deps, { trials: 1, humanScreen });
+    expect(scored(report.results)).toEqual(['tkt-000000000001']);
+    const text = report.lines.join('\n');
+    expect(text).toMatch(/\[SKIP\] tkt-000000000002 {2}unscreened/);
+    expect(text).toMatch(/\[SKIP\] tkt-000000000003 {2}stale screen/);
+  });
+
+  it('refuses to start, touching nothing, when every case is screened out', async () => {
+    const { deps } = stubDeps({ 'tkt-000000000001': { sessionSolves: [true] } });
+    const humanScreen: Screen = new Map([['tkt-000000000001', verdict({ verdict: 'no', scorable: false })]]);
+    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen })).rejects.toThrow(/all 1 case\(s\) are screened out/);
+    expect(deps.checkEnvironment).not.toHaveBeenCalled();
+    expect(deps.runSession).not.toHaveBeenCalled();
   });
 });
 
@@ -133,7 +187,7 @@ describe('evaluateCoding — a session that never ran is not a model failure', (
     }, {
       runSession: () => Promise.resolve(++calls === 1 ? session({}) : session({ exitCode: 1, costUsd: null })),
     });
-    await expect(evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 1 }))
+    await expect(evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 1, humanScreen: OPEN }))
       .rejects.toThrow(/never ran/);
     expect(recorded.map((r) => r.ticketId)).toEqual(['tkt-000000000001']);
   });
@@ -143,7 +197,7 @@ describe('evaluateCoding — a session that never ran is not a model failure', (
     const { deps, recorded } = stubDeps({ 'tkt-000000000001': { sessionSolves: [true, true] } }, {
       runSession: () => Promise.resolve(++calls === 1 ? session({}) : session({ exitCode: 1, costUsd: null })),
     });
-    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 2 })).rejects.toThrow(/never ran/);
+    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 2, humanScreen: OPEN })).rejects.toThrow(/never ran/);
     expect(recorded).toHaveLength(1);
     expect(recorded[0].status === 'scored' && recorded[0].trials.length).toBe(1);
   });
@@ -152,7 +206,7 @@ describe('evaluateCoding — a session that never ran is not a model failure', (
     const { deps } = stubDeps({ 'tkt-000000000001': { sessionSolves: [false] } }, {
       runSession: () => Promise.resolve(session({ exitCode: -1, costUsd: null, timedOut: true })),
     });
-    expect((await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1 })).metrics.scored).toBe(1);
+    expect((await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen: OPEN })).metrics.scored).toBe(1);
   });
 });
 
@@ -162,7 +216,7 @@ describe('evaluateCoding — trials and grading', () => {
       'tkt-000000000001': { sessionSolves: [true, true] },
       'tkt-000000000002': { sessionSolves: [true, false] },
     });
-    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 2 });
+    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 2, humanScreen: OPEN });
     expect(trialCount.get('tkt-000000000001')).toBe(2);
     expect(report.metrics.passAtK).toBe(1);
     expect(report.metrics.passHatK).toBe(0.5);
@@ -174,7 +228,7 @@ describe('evaluateCoding — trials and grading', () => {
 
   it('grades the fresh tree gradeTree returns, not the session\'s own', async () => {
     const { deps } = stubDeps({ 'tkt-000000000001': { sessionSolves: [true] } });
-    await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1 });
+    await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen: OPEN });
     expect(deps.gradeTree).toHaveBeenCalledWith('tkt-000000000001/trial-1', expect.objectContaining({ ticketId: 'tkt-000000000001' }), 'trial-1');
     expect(vi.mocked(deps.runHidden).mock.calls.map((c) => c[0])).toContain('tkt-000000000001/trial-1-graded');
   });
@@ -185,7 +239,7 @@ describe('evaluateCoding — trials and grading', () => {
         ? Promise.reject(new Error('vitest wrote no report\ndetail'))
         : Promise.resolve(GOLD_FULL)),
     });
-    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 1 });
+    const report = await evaluateCoding([mk('tkt-000000000001'), mk('tkt-000000000002')], deps, { trials: 1, humanScreen: OPEN });
     expect(report.metrics.passRate).toBe(0.5);
     expect(report.lines.join('\n')).toMatch(/\[ERR \] tkt-000000000001 .*vitest wrote no report/);
   });
@@ -196,7 +250,7 @@ describe('evaluateCoding — trials and grading', () => {
         ? Promise.reject(new InstrumentFault('no test slot'))
         : Promise.resolve(GOLD_FULL)),
     });
-    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1 })).rejects.toThrow(/no test slot/);
+    await expect(evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen: OPEN })).rejects.toThrow(/no test slot/);
   });
 
   it('counts a regression only when a second FULL run confirms it', async () => {
@@ -205,13 +259,13 @@ describe('evaluateCoding — trials and grading', () => {
     const flaky = stubDeps({ 'tkt-000000000001': { sessionSolves: [true] } }, {
       runFullSuite: (dir: string) => Promise.resolve(dir.includes('trial') && ++fullRuns === 1 ? regressed : GOLD_FULL),
     });
-    expect((await evaluateCoding([mk('tkt-000000000001')], flaky.deps, { trials: 1 })).metrics.passRate).toBe(1);
+    expect((await evaluateCoding([mk('tkt-000000000001')], flaky.deps, { trials: 1, humanScreen: OPEN })).metrics.passRate).toBe(1);
     expect(fullRuns).toBe(2);
 
     const real = stubDeps({ 'tkt-000000000001': { sessionSolves: [true] } }, {
       runFullSuite: (dir: string) => Promise.resolve(dir.includes('trial') ? regressed : GOLD_FULL),
     });
-    const report = await evaluateCoding([mk('tkt-000000000001')], real.deps, { trials: 1 });
+    const report = await evaluateCoding([mk('tkt-000000000001')], real.deps, { trials: 1, humanScreen: OPEN });
     expect(report.metrics.passRate).toBe(0);
     expect(report.lines.join('\n')).toMatch(/\[P2P \] tkt-000000000001 .*p\.test\.ts/);
   });
@@ -223,7 +277,7 @@ describe('evaluateCoding — trials and grading', () => {
       runFullSuite: (dir: string) => Promise.resolve(dir.includes('trial') ? trialBroke : goldFlaky),
       runFiles: vi.fn(() => Promise.resolve({ files: new Map([['p.test.ts', green]]), success: true })),
     });
-    const report = await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1 });
+    const report = await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen: OPEN });
     expect(deps.runFiles).toHaveBeenCalledWith('tkt-000000000001/control-gold', ['p.test.ts']);
     expect(report.metrics.passRate).toBe(0);
   });
@@ -232,18 +286,18 @@ describe('evaluateCoding — trials and grading', () => {
     const { deps } = stubDeps({ 'tkt-000000000001': { sessionSolves: [false] } }, {
       runSession: () => Promise.resolve(session({ costUsd: null, durationMs: 1000 })),
     });
-    const report = await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1 });
+    const report = await evaluateCoding([mk('tkt-000000000001')], deps, { trials: 1, humanScreen: OPEN });
     const text = report.lines.join('\n');
     expect(text).toMatch(/pass rate 0\.0% ± 0\.0 pts \(1 SE, n=1, k=1\)/);
     expect(text).toMatch(/a FLOOR: 1 session\(s\) reported no cost/);
     expect(report.metrics.unreportedCostSessions).toBe(1);
     expect(text).toMatch(/Residual, not screened/);
-    expect(text).toMatch(/whether each hidden test is specified by its ticket body/);
+    expect(text).toMatch(/Screened \(screen\.json\): only cases a human judged passable/);
     expect(text).toMatch(/Not comparable with the night-run `level`/);
   });
 
   it('rejects a non-positive trial count', () => {
     const { deps } = stubDeps({});
-    expect(() => evaluateCoding([mk('tkt-000000000001')], deps, { trials: 0 })).toThrow(/trials/);
+    expect(() => evaluateCoding([mk('tkt-000000000001')], deps, { trials: 0, humanScreen: OPEN })).toThrow(/trials/);
   });
 });
