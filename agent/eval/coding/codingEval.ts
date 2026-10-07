@@ -5,6 +5,7 @@ import {
   confirmedRegressions, filePasses, gradeCase, hiddenPass, mergeGoldRuns, regressionCandidates, summarizeTrials,
   type CaseGrade, type VitestRun,
 } from './grading.js';
+import { applyScreen, type Screen, type ScreenedOut } from './screen.js';
 import { NETWORK_RESIDUAL, promptHash } from './session.js';
 
 // Every git, npm, vitest and `claude` call sits behind this seam, so the eval's decisions are tested
@@ -52,6 +53,7 @@ interface Drop { ok: false; reason: string }
 
 export interface CodingEvalOptions {
   trials: number;
+  humanScreen: Screen;
 }
 
 // A case failing a control is dropped and named: its hidden tests cannot tell solved from unsolved.
@@ -102,11 +104,10 @@ export function sessionDidNotRun(s: SessionOutcome): boolean {
   return s.isError && (s.turns ?? 0) <= 1;
 }
 
-// Seen on the first real trial (tkt-4251671dcb5a): the session's own valid design failed hidden tests
-// asserting the gold PR's exact strings. Until each case is human-screened, F2P undercounts.
+// Seen on the first real trial (tkt-4251671dcb5a): a valid design failed hidden tests pinning gold's strings.
 export const UNDERSPECIFICATION =
-  'Not screened: whether each hidden test is specified by its ticket body. A hidden test that asserts the ' +
-  'gold PR\'s exact wording or design fails a different valid solution, so FAIL_TO_PASS is a floor.';
+  'Screened (screen.json): only cases a human judged passable by a body-faithful solution are scored. A ' +
+  '"partly" case still asserts some of the gold PR\'s choices, so FAIL_TO_PASS remains a floor.';
 
 // The harness itself failed (a test slot never freed, a git read of the case commit): never a score.
 export class InstrumentFault extends Error {}
@@ -145,11 +146,11 @@ function fmtUsd(v: number): string {
   return `$${v.toFixed(2)}`;
 }
 
-function summarize(results: CodingResult[]): { metrics: Record<string, number>; lines: string[] } {
+function summarize(results: CodingResult[], screenedOut: readonly ScreenedOut[]): { metrics: Record<string, number>; lines: string[] } {
   const scored = results.filter((r): r is Extract<CodingResult, { status: 'scored' }> => r.status === 'scored');
   const dropped = results.filter((r): r is Extract<CodingResult, { status: 'dropped' }> => r.status === 'dropped');
   const lines: string[] = [];
-  lines.push(`  prompt ${promptHash()} · ${scored.length} scored · ${dropped.length} dropped`);
+  lines.push(`  prompt ${promptHash()} · ${scored.length} scored · ${dropped.length} dropped · ${screenedOut.length} screened out`);
   for (const r of scored) {
     const marks = r.trials.map((t) => (t.grade.resolved ? 'PASS' : t.grade.error ? 'ERR ' : !t.grade.failToPass ? 'F2P ' : 'P2P ')).join(' ');
     const cost = r.trials.map((t) => (t.session.costUsd === null ? '$?' : fmtUsd(t.session.costUsd))).join(' ');
@@ -157,6 +158,7 @@ function summarize(results: CodingResult[]): { metrics: Record<string, number>; 
     lines.push(`  [${marks}] ${r.ticketId}  ${cost}${notes.length ? `  ${[...new Set(notes)].join('; ')}` : ''}`);
   }
   for (const r of dropped) lines.push(`  [DROP] ${r.ticketId}  ${r.reason}`);
+  for (const r of screenedOut) lines.push(`  [SKIP] ${r.ticketId}  ${r.reason}`);
 
   const trials = scored.flatMap((r) => r.trials);
   const unreportedCost = trials.filter((t) => t.session.costUsd === null).length;
@@ -172,13 +174,14 @@ function summarize(results: CodingResult[]): { metrics: Record<string, number>; 
 
   if (scored.length === 0) {
     lines.push('  NO case survived its controls — no rate is reported.');
-    return { metrics: { scored: 0, dropped: dropped.length }, lines };
+    return { metrics: { scored: 0, dropped: dropped.length, screenedOut: screenedOut.length }, lines };
   }
   const s = summarizeTrials(scored.map((r) => r.trials.map((t) => t.grade.resolved)));
   lines.push(`  pass rate ${(s.passRate * 100).toFixed(1)}% ± ${(s.standardError * 100).toFixed(1)} pts (1 SE, n=${s.cases}, k=${s.trials})`);
   const metrics: Record<string, number> = {
     scored: s.cases,
     dropped: dropped.length,
+    screenedOut: screenedOut.length,
     trials: s.trials,
     passRate: s.passRate,
     standardError: s.standardError,
@@ -199,12 +202,16 @@ export function evaluateCoding(
   if (!Number.isInteger(opts.trials) || opts.trials < 1) {
     throw new Error(`coding-eval: trials must be a positive integer, got ${opts.trials}`);
   }
+  const { scorable, screenedOut } = applyScreen(cases, opts.humanScreen);
+  if (scorable.length === 0) {
+    return Promise.reject(new Error(`coding-eval: all ${cases.length} case(s) are screened out — there is nothing to score. ${screenedOut.map((r) => `${r.ticketId}: ${r.reason}`).join('; ')}`));
+  }
   let verdicts = new Map<string, Verdict | Drop>();
   return runEval<CodingCase, CodingResult>({
     name: 'coding held-out replay',
-    cases: [...cases],
+    cases: scorable,
     assertInstruments: async () => {
-      verdicts = await runControls(cases, deps);
+      verdicts = await runControls(scorable, deps);
     },
     scoreCase: async (c) => {
       const v = verdicts.get(c.ticketId);
@@ -230,6 +237,6 @@ export function evaluateCoding(
       await deps.record(result);
       return result;
     },
-    summarize,
+    summarize: (results) => summarize(results, screenedOut),
   });
 }
