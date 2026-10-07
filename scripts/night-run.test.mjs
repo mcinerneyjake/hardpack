@@ -20,9 +20,10 @@ import {
   pidAlive, runAlive, fileHere, sentinelPaths,
   preflightGuard, main, run, sessionArgs, sessionEnv, defaultRunSession, capMsFrom, USAGE, EXIT,
   MERGE_PROBE_PAYLOAD, renderProbes, createRunWorktree, removeRunWorktree, runWorktreePath,
-  parkedWork, repoForProject, readProject,
+  parkedWork, repoForProject, readProject, concurrencyFrom, DEFAULT_SLOTS,
 } from './night-run.mjs';
 import { nightRunActive } from '../.claude/hooks/guard-unattended-merge.mjs';
+import { readBoard as readBoardReal } from './night-frontier.mjs';
 
 let board;
 beforeEach(() => {
@@ -31,8 +32,9 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(board, { recursive: true, force: true }));
 
-const seed = (id, status) =>
-  writeFileSync(join(board, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n---\nbody\n`);
+// afk by default: a night run refuses anything else, and these cases are about what happens after.
+const seed = (id, status, extra = 'autonomy: afk\n') =>
+  writeFileSync(join(board, 'tickets', `${id}.md`), `---\nid: ${id}\nstatus: ${status}\n${extra}---\nbody\n`);
 
 const A = 'tkt-00000000000a';
 const B = 'tkt-00000000000b';
@@ -69,10 +71,11 @@ const fakeWorktree = (root, stamp) => {
   return { ok: true, path, provisioned: [] };
 };
 
-// main() resolves the sentinel root through the guard; tests point it at the temp board.
+// main() resolves the sentinel root through the guard; tests point it at the temp board. One slot,
+// so the stop-ordering cases read sequentially; the concurrent cases set their own.
 const opts = (extra = {}) => ({
   resolveSentinelRoot: () => board,
-  env: {},
+  env: { TEST_SLOTS: '1' },
   createWorktree: fakeWorktree,
   removeWorktree: () => ({ removed: true }),
   ...extra,
@@ -1374,7 +1377,9 @@ describe('sentinel lifecycle and ownership — dimension 3, and two actors', () 
       await exited;
       expect(existsSync(join(board, 'worktree-removed'))).toBe(false);
       expect(readFileSync(outPath, 'utf8')).toMatch(/worktree KEPT at .* — the run was interrupted/);
-      expect(latestSummary().worktree).toMatchObject({ removed: false, why: expect.stringMatching(/interrupted/) });
+      expect(latestSummary().unfinished).toEqual([
+        { id: A, worktree: expect.objectContaining({ removed: false, why: expect.stringMatching(/interrupted/) }) },
+      ]);
     } finally {
       child.kill('SIGKILL');
       await exited;
@@ -1894,19 +1899,390 @@ describe('main — dimensions 5 and 6: the queue and the STOP file', () => {
     const kept = { removed: false, why: 'it is not clean: ?? scratch.txt' };
     const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub(), removeWorktree: () => kept })));
     expect(out).toMatch(/worktree KEPT at .* — it is not clean: \?\? scratch\.txt/);
-    expect(latestSummary().worktree).toMatchObject({ removed: false, why: kept.why });
-    expect(typeof latestSummary().worktree.path).toBe('string');
+    expect(latestSummary().results[0].worktree).toMatchObject({ removed: false, why: kept.why });
+    expect(typeof latestSummary().results[0].worktree.path).toBe('string');
   });
 
   it('records a removed worktree as removed', async () => {
     seed(A, 'todo');
     const out = await captureStdout(() => main([A], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub() })));
     expect(out).toMatch(/worktree removed: /);
-    expect(latestSummary().worktree).toMatchObject({ removed: true });
+    expect(latestSummary().results[0].worktree).toMatchObject({ removed: true });
+    expect(latestSummary().unfinished).toBeUndefined();
   });
 
   it('exports a usage string that names the npm entrypoint', () => {
     expect(USAGE).toContain('npm run night');
+  });
+});
+
+// tkt-6ed4a1a0605f — sessions that stay open until the test finishes them, so concurrency is observed
+// rather than inferred from call order: `sessionStub` resolves at once, which serializes nothing.
+const heldSessions = () => {
+  const finishers = new Map();
+  let inFlight = 0;
+  const fn = (id, o) => {
+    fn.launched.push(id);
+    fn.cwds.push(o.cwd);
+    inFlight += 1;
+    fn.maxInFlight = Math.max(fn.maxInFlight, inFlight);
+    return new Promise((resolve) => finishers.set(id, (status = 'qa', extra = {}) => {
+      if (status) seed(id, status);
+      inFlight -= 1;
+      resolve({ code: 0, out: '', capped: false, ...extra });
+    }));
+  };
+  fn.launched = [];
+  fn.cwds = [];
+  fn.maxInFlight = 0;
+  fn.finish = (id, status, extra) => finishers.get(id)(status, extra);
+  return fn;
+};
+
+// Polls a condition across macrotasks; a bound keeps a never-true condition a red, not a hang.
+const until = async (cond, what) => {
+  for (let i = 0; i < 500; i += 1) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error(`never happened: ${what}`);
+};
+const settle = async () => { for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r)); };
+
+const fixedDeps = () => ({ ok: true, value: 'v1' });
+
+describe('the AFK frontier and the parallel pool (tkt-6ed4a1a0605f)', () => {
+  const pool = (extra = {}) => opts({ spawnProbe: passingProbe(), fingerprint: fixedDeps, env: { TEST_SLOTS: '2' }, ...extra });
+
+  it('runs at most TEST_SLOTS sessions at once, and starts the next only when one finishes', async () => {
+    for (const id of [A, B, C]) seed(id, 'todo');
+    const s = heldSessions();
+    const done = main([A, B, C], board, pool({ runSession: s }));
+    await until(() => s.launched.length === 2, 'two sessions launched');
+    await settle();
+    expect(s.launched).toEqual([A, B]); // C waits for a slot
+    s.finish(B);
+    await until(() => s.launched.length === 3, 'C launched once B finished');
+    s.finish(A);
+    s.finish(C);
+    expect(await done).toBe(EXIT.ok);
+    expect(s.maxInFlight).toBe(2);
+  });
+
+  // The control for the case above: the same queue at one slot never overlaps.
+  it('one slot is strictly sequential', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    const done = main([A, B], board, pool({ runSession: s, env: { TEST_SLOTS: '1' } }));
+    await until(() => s.launched.length === 1, 'A launched');
+    await settle();
+    expect(s.launched).toEqual([A]);
+    s.finish(A);
+    await until(() => s.launched.length === 2, 'B launched');
+    s.finish(B);
+    expect(await done).toBe(EXIT.ok);
+    expect(s.maxInFlight).toBe(1);
+  });
+
+  it('gives every ticket its own worktree, named for it, and removes each as its session ends', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    const stamps = [];
+    const removed = [];
+    const createWorktree = (root, stamp) => { stamps.push(stamp); return fakeWorktree(root, stamp); };
+    const removeWorktree = (_root, made) => { removed.push(made.path); return { removed: true }; };
+    const done = main([A, B], board, pool({ runSession: s, createWorktree, removeWorktree }));
+    await until(() => s.launched.length === 2, 'both launched');
+    expect(new Set(s.cwds).size).toBe(2);
+    expect(stamps.map((x) => x.slice(-A.length))).toEqual([A, B]);
+    s.finish(A);
+    await until(() => removed.length === 1, 'A worktree released');
+    expect(removed).toEqual([s.cwds[0]]); // B's is still a live session's cwd
+    s.finish(B);
+    await done;
+    expect(latestSummary().results.map((r) => r.worktree.removed)).toEqual([true, true]);
+  });
+
+  it('a stopping verdict launches nothing further but lets the session in flight finish', async () => {
+    for (const id of [A, B, C]) seed(id, 'todo');
+    const s = heldSessions();
+    const done = main([A, B, C], board, pool({ runSession: s }));
+    await until(() => s.launched.length === 2, 'two launched');
+    s.finish(A, 'in-progress');
+    await settle();
+    expect(s.launched).toEqual([A, B]);
+    s.finish(B);
+    expect(await done).toBe(EXIT.stopped);
+    expect(latestSummary().results.map((r) => [r.id, r.level])).toEqual([[A, 'halt'], [B, 'ok']]);
+  });
+
+  it('the alarm outranks a halt whichever finishes first', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    const done = main([A, B], board, pool({ runSession: s }));
+    await until(() => s.launched.length === 2, 'both launched');
+    s.finish(B, 'done');
+    await settle();
+    s.finish(A, 'in-progress');
+    expect(await done).toBe(EXIT.alarm);
+  });
+
+  it('a ticket that left the frontier before its launch is skipped, never run', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    const done = main([A, B], board, pool({ runSession: s, env: { TEST_SLOTS: '1' } }));
+    await until(() => s.launched.length === 1, 'A launched');
+    seed(B, 'todo', 'autonomy: hitl\n'); // a human took it back while A ran
+    s.finish(A);
+    expect(await done).toBe(EXIT.ok);
+    expect(s.launched).toEqual([A]);
+    // Not a result: the morning hook reads every result id as this night's work.
+    expect(latestSummary()).toMatchObject({
+      launched: [A],
+      notLaunched: [{ id: B, why: 'autonomy is hitl, not afk' }],
+    });
+    expect(latestSummary().results.map((r) => r.id)).toEqual([A]);
+  });
+
+  // The first ticket was selected before the claim and the probes, which can take minutes.
+  it('the first ticket is re-checked after the pre-flight too, and the next one takes its place', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    let call = 0;
+    const spawnProbe = () => {
+      if (call === 0) seed(A, 'in-progress'); // a human started it during the probes
+      return Promise.resolve(call++ === 0 ? { code: 0, out: 'BLOCKED', capped: false } : { code: 0, out: '', capped: false });
+    };
+    const done = main([A, B], board, pool({ spawnProbe, runSession: s }));
+    await until(() => s.launched.length === 1, 'B launched');
+    s.finish(B);
+    expect(await done).toBe(EXIT.ok);
+    expect(s.launched).toEqual([B]);
+    expect(latestSummary().notLaunched).toEqual([{ id: A, why: 'status is in-progress, not todo' }]);
+  });
+
+  it('a queue that all left the frontier during the pre-flight runs nothing and exits 0', async () => {
+    seed(A, 'todo');
+    const runSession = sessionStub();
+    let call = 0;
+    const spawnProbe = () => {
+      if (call === 0) seed(A, 'todo', 'autonomy: hitl\n');
+      return Promise.resolve(call++ === 0 ? { code: 0, out: 'BLOCKED', capped: false } : { code: 0, out: '', capped: false });
+    };
+    expect(await main([A], board, pool({ spawnProbe, runSession }))).toBe(EXIT.ok);
+    expect(runSession.calls).toEqual([]);
+    expect(existsSync(sentinelPaths(board).active)).toBe(false);
+  });
+
+  it('a board that cannot be re-read at a launch stops the night rather than skipping to a clean exit', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    let reads = 0;
+    // Read 1 selects, read 2 re-checks A after the pre-flight, read 3 is B's launch.
+    const loadBoard = (dir) => (++reads >= 3 ? { ok: false, why: 'EACCES' } : readBoardReal(dir));
+    const done = main([A, B], board, pool({ runSession: s, loadBoard, env: { TEST_SLOTS: '1' } }));
+    await until(() => s.launched.length === 1, 'A launched');
+    s.finish(A);
+    expect(await done).toBe(EXIT.stopped);
+    expect(s.launched).toEqual([A]);
+    expect(latestSummary().notLaunched).toEqual([{ id: B, why: 'the board could not be re-read (EACCES)' }]);
+  });
+
+  it('a later worktree that cannot be made halts the night, and the session in flight still finishes', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    const createWorktree = (root, stamp) => (stamp.endsWith(B) ? { ok: false, why: 'disk full' } : fakeWorktree(root, stamp));
+    const done = main([A, B], board, pool({ runSession: s, createWorktree }));
+    await until(() => s.launched.length === 1, 'A launched');
+    await settle();
+    s.finish(A);
+    expect(await done).toBe(EXIT.stopped);
+    expect(s.launched).toEqual([A]);
+    expect(latestSummary().results.map((r) => [r.id, r.level])).toEqual([[A, 'ok']]);
+    expect(latestSummary().notLaunched).toEqual([{ id: B, why: 'disk full' }]);
+  });
+
+  it('fetches origin/main once, for the first worktree, and never again per launch', async () => {
+    for (const id of [A, B, C]) seed(id, 'todo');
+    const fetches = [];
+    const createWorktree = (root, stamp, o) => { fetches.push(o?.fetch); return fakeWorktree(root, stamp); };
+    await main([A, B, C], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub(), createWorktree, fingerprint: fixedDeps }));
+    expect(fetches).toEqual([true, false, false]);
+  });
+
+  // The pool makes this reachable: a throw while judging one session used to run the finally at once,
+  // disarming the merge gate while a sibling was still running unattended.
+  it('a throw while judging one session keeps the gate armed until the sibling in flight ends', async () => {
+    for (const id of [A, B]) seed(id, 'todo');
+    const s = heldSessions();
+    const kept = [];
+    const removeWorktree = (_root, made) => {
+      if (made.path === s.cwds[0]) throw new Error('boom');
+      kept.push(made.path);
+      return { removed: true };
+    };
+    const done = main([A, B], board, pool({ runSession: s, removeWorktree }));
+    const settled = done.then(() => 'resolved', (e) => e.message);
+    await until(() => s.launched.length === 2, 'both launched');
+    s.finish(A);
+    await settle();
+    expect(existsSync(sentinelPaths(board).active), 'disarmed with B still running').toBe(true);
+    s.finish(B);
+    expect(await settled).toBe('boom');
+    expect(existsSync(sentinelPaths(board).active)).toBe(false);
+    expect(kept).toEqual([]); // B was never judged, so its worktree is kept, not removed
+    expect(latestSummary()).toMatchObject({ exit: EXIT.stopped, crash: 'boom', unfinished: [{ id: B }] });
+  });
+
+  describe('dependency changes under a shared node_modules', () => {
+    const after = (values) => {
+      let i = 0;
+      return () => values[Math.min(i++, values.length - 1)];
+    };
+
+    it('a changed fingerprint after a session stops further launches, naming who finished and who is in flight', async () => {
+      for (const id of [A, B, C]) seed(id, 'todo');
+      const s = heldSessions();
+      const fingerprint = after([{ ok: true, value: 'v1' }, { ok: true, value: 'v2' }]);
+      let out = '';
+      const done = captureStdout(async () => { await main([A, B, C], board, pool({ runSession: s, fingerprint })); }).then((o) => { out = o; });
+      await until(() => s.launched.length === 2, 'two launched');
+      s.finish(A);
+      await settle();
+      expect(s.launched).toEqual([A, B]);
+      s.finish(B);
+      await done;
+      expect(out).toMatch(new RegExp(`node_modules changed by the time ${A} finished \\(in flight: ${B}\\)`));
+      expect(latestSummary()).toMatchObject({ exit: EXIT.stopped, depsChanged: { after: A, inFlight: [B], why: 'changed' } });
+    });
+
+    // The control: the same night with a steady fingerprint runs all three.
+    it('a steady fingerprint runs the whole queue', async () => {
+      for (const id of [A, B, C]) seed(id, 'todo');
+      const s = heldSessions();
+      const done = main([A, B, C], board, pool({ runSession: s }));
+      await until(() => s.launched.length === 2, 'two launched');
+      s.finish(A);
+      await until(() => s.launched.length === 3, 'C launched');
+      s.finish(B);
+      s.finish(C);
+      expect(await done).toBe(EXIT.ok);
+      expect(latestSummary().depsChanged).toBeUndefined();
+    });
+
+    it('a fingerprint that cannot be re-read counts as a change', async () => {
+      for (const id of [A, B]) seed(id, 'todo');
+      const fingerprint = after([{ ok: true, value: 'v1' }, { ok: false, why: 'EACCES' }]);
+      const code = await main([A, B], board, opts({ spawnProbe: passingProbe(), runSession: sessionStub(), fingerprint }));
+      expect(code).toBe(EXIT.stopped);
+      expect(latestSummary().depsChanged).toMatchObject({ after: A, why: 'could not be re-read (EACCES)' });
+      expect(latestSummary().results.map((r) => r.id)).toEqual([A]);
+    });
+
+    it('a fingerprint that cannot be taken at all is a pre-flight failure before any session', async () => {
+      seed(A, 'todo');
+      const runSession = sessionStub();
+      const code = await main([A], board, opts({ spawnProbe: passingProbe(), runSession, fingerprint: () => ({ ok: false, why: 'EIO' }) }));
+      expect(code).toBe(EXIT.preflight);
+      expect(runSession.calls).toEqual([]);
+      expect(existsSync(sentinelPaths(board).active)).toBe(false);
+    });
+  });
+
+  describe('selection happens before the claim', () => {
+    it('--frontier runs the afk todo tickets whose blockers are done, in priority order, and says what it left out', async () => {
+      seed(A, 'todo', 'autonomy: afk\npriority: low\n');
+      seed(B, 'todo', 'autonomy: afk\npriority: urgent\n');
+      seed(C, 'todo', `autonomy: afk\nblockers:\n  - ${A}\n`);
+      seed('tkt-00000000000d', 'todo', 'autonomy: hitl\n');
+      const runSession = sessionStub();
+      const out = await captureStdout(() => main(['--frontier'], board, opts({ spawnProbe: passingProbe(), runSession, fingerprint: fixedDeps })));
+      expect(runSession.calls).toEqual([B, A]);
+      expect(out).toMatch(new RegExp(`not in the frontier: ${C} — blocked by ${A}\\(todo\\)`));
+      expect(out).not.toMatch(/tkt-00000000000d/);
+      expect(latestSummary()).toMatchObject({ mode: 'frontier', queue: [B, A], excluded: [{ id: C }] });
+    });
+
+    it('--frontier --project narrows to that project', async () => {
+      seed(A, 'todo', 'autonomy: afk\nproject: hardpack\n');
+      seed(B, 'todo', 'autonomy: afk\nproject: copart-filter\n');
+      const runSession = sessionStub();
+      await main(['--frontier', '--project', 'hardpack'], board, opts({ spawnProbe: passingProbe(), runSession, fingerprint: fixedDeps }));
+      expect(runSession.calls).toEqual([A]);
+    });
+
+    it('an empty frontier runs nothing, claims nothing, and is not an error', async () => {
+      seed(A, 'todo', 'autonomy: hitl\n');
+      const runSession = sessionStub();
+      let code;
+      const out = await captureStdout(async () => { code = await main(['--frontier'], board, opts({ runSession })); });
+      expect(code).toBe(EXIT.ok);
+      expect(out).toMatch(/AFK frontier is empty/);
+      expect(runSession.calls).toEqual([]);
+      expect(existsSync(join(board, '.night-run'))).toBe(false);
+    });
+
+    it('a named id outside the frontier refuses the whole night before the sentinel is claimed', async () => {
+      seed(A, 'todo');
+      seed(B, 'todo', 'autonomy: hitl\n');
+      const runSession = sessionStub();
+      const errs = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (c) => { errs.push(String(c)); return true; };
+      let code;
+      try { code = await main([A, B], board, opts({ spawnProbe: passingProbe(), runSession })); } finally { process.stderr.write = orig; }
+      expect(code).toBe(EXIT.preflight);
+      expect(runSession.calls).toEqual([]);
+      expect(errs.join('')).toMatch(new RegExp(`${B}: autonomy is hitl, not afk`));
+      expect(existsSync(join(board, '.night-run'))).toBe(false);
+    });
+
+    // The positive control for the refusal: the same named queue, all afk, runs.
+    it('a named queue that is all frontier runs', async () => {
+      seed(A, 'todo');
+      seed(B, 'todo');
+      const runSession = sessionStub();
+      expect(await main([A, B], board, opts({ spawnProbe: passingProbe(), runSession }))).toBe(EXIT.ok);
+      expect(runSession.calls).toEqual([A, B]);
+    });
+
+    it('a board that cannot be read is a pre-flight failure, never an empty frontier', async () => {
+      const code = await main(['--frontier'], join(board, 'nope'), opts({ runSession: sessionStub() }));
+      expect(code).toBe(EXIT.preflight);
+    });
+  });
+
+  describe('arguments', () => {
+    it.each([
+      [['--frontier', '--project']],
+      [['--frontier', A]],
+      [['--project', 'hardpack']],
+      [[A, '--frontier']],
+      [['--frontier', '--project', '--frontier']],
+    ])('%j is a usage error', async (argv) => {
+      expect(await main(argv, board, opts())).toBe(EXIT.usage);
+    });
+
+    it.each(['0', '-1', '1.5', 'abc', '', ' 2'])('TEST_SLOTS=%j is a usage error, not a default', async (raw) => {
+      seed(A, 'todo');
+      const runSession = sessionStub();
+      expect(await main([A], board, opts({ env: { TEST_SLOTS: raw }, runSession }))).toBe(EXIT.usage);
+      expect(runSession.calls).toEqual([]);
+    });
+
+    it('concurrencyFrom defaults when unset and takes a positive whole number', () => {
+      expect(concurrencyFrom(undefined)).toEqual({ ok: true, slots: DEFAULT_SLOTS });
+      expect(concurrencyFrom('3')).toEqual({ ok: true, slots: 3 });
+    });
+
+    // The runner and the vitest hold read one variable; their defaults must agree, so an unset
+    // TEST_SLOTS never launches more sessions than there are slots to test in.
+    it('the default slot count is the installed hold’s default', () => {
+      const hold = readFileSync(join(here, '..', 'node_modules', 'ticket-workflow', 'dist', 'test-run', 'hold.js'), 'utf8');
+      const m = /envInt\(env,\s*'TEST_SLOTS',\s*(\d+),/.exec(hold);
+      expect(m, 'the hold no longer reads TEST_SLOTS through envInt — re-derive the binding').not.toBeNull();
+      expect(Number(m[1])).toBe(DEFAULT_SLOTS);
+    });
   });
 });
 

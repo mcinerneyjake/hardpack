@@ -258,6 +258,17 @@ describe('night-report hook: cases the review found silent', () => {
     expect(lines[0]).toContain('stopped mid-ticket');
   });
 
+  // tkt-6ed4a1a0605f — a frontier queue names every ticket the night might run; only the launched
+  // ones were in flight, and one a human picked up afterwards is not the night's.
+  it('reads `launched` over the queue when the runner recorded it', () => {
+    seedRun('2026-09-03T04-00-00-000Z', { startedAt: 'x', queue: [ID, ID2], launched: [ID], results: [], exit: null });
+    seedTicket(ID, 'in-progress');
+    seedTicket(ID2, 'in-progress');
+    const text = run().join(' ');
+    expect(text).toContain(ID);
+    expect(text).not.toContain(ID2);
+  });
+
   it('does not nag about queue entries a cleanly-finished run never processed', () => {
     // Measured on the real board: three probe runs carry queue ["tkt-000000000000"], results [] and
     // exit 0, and an ungated queue read reported that fixture id at every session start.

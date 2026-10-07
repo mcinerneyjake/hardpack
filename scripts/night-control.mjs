@@ -39,6 +39,7 @@ const RUNNER = join(HERE, 'night-run.mjs');
 
 export const CONTROL_USAGE =
   'usage: npm run night:start -- <ticket-id>... [--no-wait] [--wait-seconds N]\n' +
+  '       npm run night:start -- --frontier [--project <name>] [--no-wait] [--wait-seconds N]\n' +
   '       npm run night:status\n' +
   '       npm run night:stop [--now]';
 
@@ -132,9 +133,18 @@ export function parseArgs(argv) {
   let wait = true;
   let waitMs = DEFAULT_WAIT_MS;
   let hard = false;
+  let frontier = false;
+  let project = null;
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (a === '--no-wait') { wait = false; continue; }
+    if (a === '--frontier') { frontier = true; continue; }
+    if (a === '--project') {
+      project = rest[i + 1] ?? '';
+      i += 1;
+      if (!project || project.startsWith('--')) return { ok: false, why: '--project needs a project name' };
+      continue;
+    }
     if (a === '--now') { hard = true; continue; }
     if (a === '--wait-seconds') {
       const raw = rest[i + 1];
@@ -149,7 +159,9 @@ export function parseArgs(argv) {
     if (a.startsWith('--')) return { ok: false, why: `unknown flag ${a}` };
     ids.push(a);
   }
-  return { ok: true, verb, ids, wait, waitMs, hard };
+  if (project !== null && !frontier) return { ok: false, why: '--project narrows --frontier, and means nothing without it' };
+  if (frontier && ids.length > 0) return { ok: false, why: '--frontier selects its own queue, so ticket ids cannot be named with it' };
+  return { ok: true, verb, ids, wait, waitMs, hard, frontier, project };
 }
 
 // The runner is a process-group leader when this launcher started it (`detached: true`), which is
@@ -292,7 +304,7 @@ async function start(args, deps) {
   const { out, err, spawnFn, openLog, now, sleep, alive, commandOf } = deps;
 
   const bad = args.ids.filter((id) => !/^tkt-[0-9a-f]{12}$/.test(id));
-  if (args.ids.length === 0 || bad.length > 0) {
+  if ((!args.frontier && args.ids.length === 0) || bad.length > 0) {
     // Caught here rather than in the child: a detached runner's usage error lands in a log nobody is
     // watching, so a typo would read as a night that quietly ran nothing.
     err.write(`${bad.length ? `not a ticket id: ${bad.join(', ')}\n` : 'no ticket ids given\n'}${CONTROL_USAGE}\n`);
@@ -310,7 +322,9 @@ async function start(args, deps) {
 
   let exited = null;
   let spawnError = null;
-  const child = spawnFn(process.execPath, [RUNNER, ...args.ids], {
+  const runnerArgs = args.frontier ? ['--frontier', ...(args.project ? ['--project', args.project] : [])] : args.ids;
+  const queue = args.frontier ? `the AFK frontier${args.project ? ` of ${args.project}` : ''}` : args.ids.join(' ');
+  const child = spawnFn(process.execPath, [RUNNER, ...runnerArgs], {
     cwd: root,
     detached: true,
     stdio: ['ignore', fd, fd],
@@ -332,6 +346,13 @@ async function start(args, deps) {
     err.write(`the runner could not be started (${String(spawnError)})\n`);
     return EXIT.stopped;
   }
+  // Selection runs before the claim (tkt-6ed4a1a0605f), so an exit there carries the runner's own
+  // verdict: 0 is an empty frontier, which is a quiet night, and a refused queue keeps its pre-flight
+  // code rather than reading as a crash.
+  if (claimed === 'exited' && (exited.code === EXIT.ok || exited.code === EXIT.preflight)) {
+    (exited.code === EXIT.ok ? out : err).write(`the runner exited before claiming the sentinel (code ${exited.code}); nothing was run\n${readIfThere(logPath)}`);
+    return exited.code;
+  }
   if (claimed === 'exited' || claimed === null) {
     // The runner's own log carries the reason a claim was refused — a live single-owner sentinel from
     // an older runner is the one case left, now that live claims coexist.
@@ -343,7 +364,7 @@ async function start(args, deps) {
   }
 
   if (!args.wait) {
-    out.write(`sentinel claimed by pid ${pid}; queue: ${args.ids.join(' ')}\npre-flight NOT waited for (--no-wait) — check with: npm run night:status\n`);
+    out.write(`sentinel claimed by pid ${pid}; queue: ${queue}\npre-flight NOT waited for (--no-wait) — check with: npm run night:status\n`);
     return EXIT.ok;
   }
 
@@ -363,7 +384,7 @@ async function start(args, deps) {
       out.write(
         `pre-flight confirmed — the merge guard blocks while armed and permits while disarmed.\n` +
         `night run started: pid ${pid}\n` +
-        `queue: ${args.ids.join(' ')}\n` +
+        `queue: ${queue}\n` +
         `log: ${logPath}\n` +
         `\`gh pr merge\` is now BLOCKED in ${root} until every night run ends (npm run night:stop).\n`,
       );
