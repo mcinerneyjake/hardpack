@@ -551,21 +551,21 @@ describe('pinned ticket-workflow build: start_ticket refuses an in-progress tick
 // tkt-ad0806bc834f. A bump inverting the linked-worktree allow would wedge every armed ticket session
 // with this gate green. Asserts THIS repo's install; settings.audit.test.mjs binds the wired
 // ~/.claude/tools one to it. Spawned, not imported, because the module calls process.exit.
+// A pre-commit hook exports GIT_DIR/GIT_INDEX_FILE, which would retarget every fixture git call
+// at the repo being committed rather than the fixture.
+const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
+const git = (args: string[], cwd: string) =>
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, env: cleanEnv(), stdio: 'pipe' });
+// Inside the repo, never os.tmpdir(); realpath because the guards realpath the paths they judge.
+const fixtures = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), '.tmp-test');
+
 describe('pinned ticket-workflow build: guard-worktree verdicts', () => {
   const guard = createRequire(import.meta.url).resolve('ticket-workflow/hooks/guard-worktree.mjs');
-  // Inside the repo, never os.tmpdir(); realpath because the guard realpaths the paths it judges.
-  const fixtures = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), '.tmp-test');
   const SESSION = 'pkg-contract-session';
   let root = '';
   let primary = '';
   let linked = '';
   let stateDir = '';
-
-  // A pre-commit hook exports GIT_DIR/GIT_INDEX_FILE, which would retarget every fixture git call
-  // at the repo being committed rather than the fixture.
-  const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
-  const git = (args: string[], cwd: string) =>
-    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, env: cleanEnv(), stdio: 'pipe' });
 
   const hook = (payload: Record<string, unknown>) =>
     spawnSync(process.execPath, [guard], {
@@ -671,6 +671,129 @@ describe('pinned ticket-workflow build: guard-worktree verdicts', () => {
   it('allows the same primary Edit for a session that never started a ticket', () => {
     const r = hook({ session_id: 'pkg-contract-unarmed', tool_name: 'Edit', cwd: primary, tool_input: { file_path: path.join(primary, 'file.txt') } });
     expect(r.status, r.stderr).toBe(0);
+  });
+});
+
+// tkt-479685c383db. v0.32.0 moved subagent `git push` from guard-subagent-gates to guard-bash's
+// current-branch rule; the pilot's review subagent pushes and opens the PR on the strength of it.
+describe('pinned ticket-workflow build: subagent push and merge verdicts', () => {
+  const resolve = createRequire(import.meta.url).resolve;
+  const gates = resolve('ticket-workflow/hooks/guard-subagent-gates.mjs');
+  const bash = resolve('ticket-workflow/hooks/guard-bash.mjs');
+  const BRANCH = 'task/tkt-000000000000-x';
+  let repo = '';
+  let base = '';
+
+  const run = (guard: string, command: string, subagent: boolean) =>
+    spawnSync(process.execPath, [guard], {
+      cwd: repo,
+      input: JSON.stringify({
+        tool_name: 'Bash',
+        session_id: 'pkg-contract-subagent',
+        cwd: repo,
+        tool_input: { command },
+        ...(subagent ? { agent_id: 'a1', agent_type: 'general-purpose' } : {}),
+      }),
+      env: cleanEnv(),
+      encoding: 'utf8',
+    });
+
+  beforeAll(() => {
+    mkdirSync(fixtures, { recursive: true });
+    base = realpathSync(mkdtempSync(path.join(fixtures, 'guard-subagent-')));
+    const origin = path.join(base, 'origin.git');
+    repo = path.join(base, 'clone');
+    git(['init', '-q', '--bare', '-b', 'main', origin], base);
+    git(['clone', '-q', origin, repo], base);
+    writeFileSync(path.join(repo, 'file.txt'), 'x\n');
+    git(['add', 'file.txt'], repo);
+    git(['commit', '-q', '-m', 'init'], repo);
+    git(['push', '-q', '-u', 'origin', 'main'], repo);
+    git(['remote', 'set-head', 'origin', 'main'], repo);
+    git(['switch', '-q', '-c', BRANCH], repo);
+  });
+
+  afterAll(() => {
+    if (base) rmSync(base, { recursive: true, force: true });
+  });
+
+  it.each([`git push -u origin ${BRANCH}`, 'git push'])('admits a subagent `%s` of its current branch, at both guards', (command) => {
+    for (const guard of [gates, bash]) {
+      const r = run(guard, command, true);
+      expect(r.status, `${path.basename(guard)}: ${r.stderr}`).toBe(0);
+    }
+  });
+
+  it.each([`git push origin --delete ${BRANCH}`, 'git push origin HEAD:other', `git push origin ${BRANCH}:other`])(
+    'refuses a subagent `%s`, which is not its current branch',
+    (command) => {
+      const r = run(bash, command, true);
+      expect(r.status, r.stderr).toBe(2);
+      expect(r.stderr).toMatch(/subagent may push only its current branch/);
+    },
+  );
+
+  it('refuses a subagent merge', () => {
+    const r = run(gates, 'gh pr merge 1 --squash', true);
+    expect(r.status, r.stderr).toBe(2);
+  });
+
+  // Negative control: the same commands from the main thread, so the refusals above are about the
+  // subagent and not unconditional.
+  it.each([`git push origin --delete ${BRANCH}`, 'gh pr merge 1 --squash'])('admits a main-thread `%s`', (command) => {
+    for (const guard of [gates, bash]) {
+      const r = run(guard, command, false);
+      expect(r.status, `${path.basename(guard)}: ${r.stderr}`).toBe(0);
+    }
+  });
+});
+
+// tkt-479685c383db. v0.32.0 gives create_ticket its only exception: a parent that is an OPEN spec
+// ticket. CLAUDE.md still routes every other create through intake, so the refusals are the contract.
+describe('pinned ticket-workflow build: guard-ticket spec-parent exception', () => {
+  const guard = createRequire(import.meta.url).resolve('ticket-workflow/hooks/guard-ticket.mjs');
+  const SPEC = "'mcinerneyjake/hardpack:docs/specs/x.md'";
+
+  const create = (toolInput: Record<string, unknown>) =>
+    spawnSync(process.execPath, [guard], {
+      input: JSON.stringify({ tool_name: 'mcp__kanban__create_ticket', session_id: 'pkg-contract-ticket', tool_input: toolInput }),
+      env: { ...cleanEnv(), TICKETS_DIR_OVERRIDE: dirs.tickets, EVENTS_DIR_OVERRIDE: dirs.events },
+      encoding: 'utf8',
+    });
+
+  it('admits a create parented to an open spec ticket', async () => {
+    await writeRaw('tkt-5bec00000001', { status: 'todo', spec: SPEC });
+    const r = create({ title: 'slice', parent: 'tkt-5bec00000001' });
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it('refuses a create with no parent', () => {
+    expect(create({ title: 'x' }).status).toBe(2);
+  });
+
+  it('refuses a create parented to an open ticket with no spec', async () => {
+    await writeRaw('tkt-5bec00000002', { status: 'todo' });
+    const r = create({ title: 'slice', parent: 'tkt-5bec00000002' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/not a spec ticket/);
+  });
+
+  it.each(['done', 'archived'])('refuses a create parented to a %s spec ticket', async (status) => {
+    const id = status === 'done' ? 'tkt-5bec00000003' : 'tkt-5bec00000004';
+    await writeRaw(id, { status, spec: SPEC });
+    const r = create({ title: 'slice', parent: id });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/closed spec ticket/);
+  });
+
+  it('refuses a parent that does not exist', () => {
+    expect(create({ title: 'slice', parent: 'tkt-5bec0000ffff' }).status).toBe(2);
+  });
+
+  it('refuses a create that itself carries `spec`, even under an open spec parent', async () => {
+    await writeRaw('tkt-5bec00000005', { status: 'todo', spec: SPEC });
+    const r = create({ title: 'slice', parent: 'tkt-5bec00000005', spec: 'mcinerneyjake/hardpack:docs/specs/y.md' });
+    expect(r.status).toBe(2);
   });
 });
 
