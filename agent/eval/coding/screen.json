@@ -1,5 +1,5 @@
 {
-  "$comment": "Hand-maintained human screen (tkt-91ec1112633c): could a solution faithful to the frozen body pass every hidden file? Only scorable cases are run. Method and evidence are on the ticket. bodySha256, commit and testFiles bind each verdict to what it judged.",
+  "$comment": "Hand-maintained human screen (tkt-91ec1112633c): could a solution faithful to the frozen body pass every hidden file? Only scorable cases are run. Method and evidence are on the ticket. bodySha256, commit, testFiles and statementSha256 bind each verdict to what it judged. statementSha256 is the sha256 of the statement as judged; those verdicts predate the interface section (tkt-31b7acb04b13), so a case that now gains one reads stale.",
   "screenedAt": "2026-09-30",
   "cases": {
     "tkt-4251671dcb5a": {
@@ -8,6 +8,7 @@
       "testFiles": [
         "agent/cost/cost.test.ts"
       ],
+      "statementSha256": "6adbf2832b92b37a81941db16c67e5a75ef5a170e99e4966c85357bd37c93386",
       "verdict": "partly",
       "scorable": false,
       "note": "note wording (/no usable call trace/i, 4,000,000, /embed/i); empty-callTrace fallback to the mixed total; only one of the two designs the body allows passes"
@@ -21,6 +22,7 @@
         "src/api.test.ts",
         "src/lib/draftFailure.test.ts"
       ],
+      "statementSha256": "4031dde7e65270ada9ac46602e50c57423db96fd90171f7b2f114e284cde4855",
       "verdict": "no",
       "scorable": false,
       "note": "new module agent/runtime/unavailable.ts (RuntimeUnavailableError, isRuntimeUnavailable), ApiError in src/api.ts, src/lib/draftFailure.ts, 502->503 mapping"
@@ -31,6 +33,7 @@
       "testFiles": [
         "agent/runtime/runReport.test.ts"
       ],
+      "statementSha256": "7a42be6196e7fb0f46c3ced4a60337578a4964a707095a8df4bf39e6fcb98ea2",
       "verdict": "no",
       "scorable": false,
       "note": "new runReport.ts exports (cappedCreatesWarning, describeThrownRun) where the body describes an inline fix; null-for-NaN/1.5/-1 contract; exact line text"
@@ -42,6 +45,7 @@
         "agent/retrieval/connectors/ticket.test.ts",
         "agent/retrieval/indexCache.test.ts"
       ],
+      "statementSha256": "089e19acecb209e7a35422b024bd833e0dbed8854b8d0c9dca2924769eef8409",
       "verdict": "no",
       "scorable": false,
       "note": "imports prunePreventedBy, a helper the body never names, plus its signature and strings; TicketConnector.pullBoard()"
@@ -52,6 +56,7 @@
       "testFiles": [
         "server/terminalHome.test.ts"
       ],
+      "statementSha256": "90caedb27a11abc20971a39f88c9c800e57399d975570e941a3ae7968778e1b4",
       "verdict": "no",
       "scorable": false,
       "note": "one-sentence body; tests import readHostModel/applyHostModel/claudeSettingsPath and pin CLAUDE_CONFIG_DIR, a 3-way status union and error strings"
@@ -62,6 +67,7 @@
       "testFiles": [
         "agent/runtime/loop.test.ts"
       ],
+      "statementSha256": "06d1d7a93f3da58068a1406e76424d285ece2a195781cb657ffa84fc24ddffc6",
       "verdict": "no",
       "scorable": false,
       "note": "fence format <untrusted-data nonce=\"<32 hex>\">, per-call nonce, the gold system-prompt sentence verbatim"
@@ -72,6 +78,7 @@
       "testFiles": [
         "scripts/probe/nul-bytes.test.mjs"
       ],
+      "statementSha256": "5df27be3080dbd1c7707d006f559ba71feeade8d74cd6860acc8662b0786fddd",
       "verdict": "no",
       "scorable": false,
       "note": "tests cover a new probe scripts/probe/nul-bytes.mjs (API, exit codes, stdout) the body never describes"
@@ -83,6 +90,7 @@
         "server/completion.test.ts",
         "server/index.test.ts"
       ],
+      "statementSha256": "0820f34873cc2845a778dbc61706a7934260ac15cfe65eb349ccc0f713492906",
       "verdict": "no",
       "scorable": false,
       "note": "exact keys eventsSkipped/eventsUnreadable; hidden L112-116 contradict the body on a torn final line"
@@ -93,6 +101,7 @@
       "testFiles": [
         "scripts/probe/adoption-markers.test.mjs"
       ],
+      "statementSha256": "d4a3edf4ae30a4963d79a6bffa35f2b480553d7ce68d2128ecb0e30a0659717d",
       "verdict": "no",
       "scorable": false,
       "note": "body asks for a workflow-doc change; tests import a new probe scripts/probe/adoption-markers.mjs"
@@ -103,6 +112,7 @@
       "testFiles": [
         "agent/runtime/runReport.test.ts"
       ],
+      "statementSha256": "802302423383f860255aef19b2e38017bcce481b75c9c7887faaed3b8ae553e2",
       "verdict": "partly",
       "scorable": true,
       "note": "only the helper name rejectedWritesWarning, implied by the cappedCreatesWarning sibling the body cites; the refusal string exists verbatim at base"
@@ -113,6 +123,7 @@
       "testFiles": [
         "server/terminalDocker.test.ts"
       ],
+      "statementSha256": "a8099ab7781d6a31319a08ec4fc9f7f1a6c9f456f03b3ec0e512bee2d64b12a3",
       "verdict": "no",
       "scorable": false,
       "note": "stdio ['ignore','ignore','pipe'], pipe only when context is set, exact log strings, ~4 KB stderr cap"
@@ -123,6 +134,7 @@
       "testFiles": [
         "scripts/terminal-setup-cred.test.mjs"
       ],
+      "statementSha256": "6290e64c560811548487a1ebe0e05738c08844c14726ecc059e0faed956861a5",
       "verdict": "no",
       "scorable": false,
       "note": "readToken({input,output,isTTY}) export and signature; assemblePastedLines -> {token, lineCount}"
@@ -133,6 +145,7 @@
       "testFiles": [
         "scripts/probe/clean-room.test.mjs"
       ],
+      "statementSha256": "38672ada920cec798548892ced7b64dae9d6974c5e90b763d09e4db785d6e414",
       "verdict": "no",
       "scorable": false,
       "note": "SAMPLE_NOTE export, a sample result field, spawn injected at the spawnSync level, gold wording"
